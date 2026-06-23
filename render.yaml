@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: ghost-translator
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: SOURCE_GHOST_URL
+        sync: false
+      - key: SOURCE_GHOST_ADMIN_API_KEY
+        sync: false
+      - key: TARGET_GHOST_URL
+        sync: false
+      - key: TARGET_GHOST_ADMIN_API_KEY
+        sync: false
+      - key: DEEPL_API_KEY
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: MAP_FILE
+        value: /tmp/map.json
