@@ -30,16 +30,16 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 MAP_PATH = Path(os.getenv("MAP_FILE", "map.json"))
 
 http = httpx.Client(timeout=60.0)
-_deepl: deepl.DeepLClient | None = None
+_deepl_client: deepl.DeepLClient | None = None
 
 app = FastAPI()
 
 
-def _deepl() -> deepl.DeepLClient:
-    global _deepl
-    if _deepl is None:
-        _deepl = deepl.DeepLClient(os.environ["DEEPL_API_KEY"])
-    return _deepl
+def _get_deepl() -> deepl.DeepLClient:
+    global _deepl_client
+    if _deepl_client is None:
+        _deepl_client = deepl.DeepLClient(os.environ["DEEPL_API_KEY"])
+    return _deepl_client
 
 
 def _ghost_token(admin_key: str) -> str:
@@ -81,7 +81,7 @@ def _tr(text: str, *, html: bool = False) -> str:
         kwargs["tag_handling"] = "html"
         kwargs["tag_handling_version"] = "v2"
         kwargs["split_sentences"] = "nonewlines"
-    return _deepl().translate_text(text, **kwargs).text
+    return _get_deepl().translate_text(text, **kwargs).text
 
 
 def _load_map() -> dict[str, str]:
