@@ -210,6 +210,17 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/status")
+def status() -> dict[str, bool]:
+    """Проверка, что переменные окружения заданы (без раскрытия значений)."""
+    return {
+        "source_configured": bool(SOURCE_URL and SOURCE_KEY),
+        "target_configured": bool(TARGET_URL and TARGET_KEY),
+        "deepl_configured": bool(os.getenv("DEEPL_API_KEY")),
+        "webhook_secret_set": bool(WEBHOOK_SECRET),
+    }
+
+
 @app.post("/webhook/ghost")
 async def webhook(
     request: Request,
