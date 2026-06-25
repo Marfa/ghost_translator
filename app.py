@@ -68,6 +68,9 @@ def _ghost(base: str, key: str, method: str, path: str, **kwargs: Any) -> dict[s
     return response.json()
 
 
+# ponytail: DeepL request body cap is 128 KiB; stay under with margin for JSON overhead
+_DEEPL_MAX_BYTES = 100 * 1024
+
 def _tr(text: str, *, html: bool = False) -> str:
     text = text.strip()
     if not text:
@@ -82,6 +85,42 @@ def _tr(text: str, *, html: bool = False) -> str:
         kwargs["tag_handling_version"] = "v2"
         kwargs["split_sentences"] = "nonewlines"
     return _get_deepl().translate_text(text, **kwargs).text
+
+
+_BLOCK_END = re.compile(
+    r"(</p>|</h1>|</h2>|</h3>|</h4>|</h5>|</h6>|</li>|</figure>|</blockquote>|</tr>)"
+)
+
+
+def _split_html_blocks(html: str) -> list[str]:
+    pieces = _BLOCK_END.split(html)
+    blocks: list[str] = []
+    for i in range(0, len(pieces) - 1, 2):
+        blocks.append(pieces[i] + pieces[i + 1])
+    if len(pieces) % 2 == 1 and pieces[-1]:
+        blocks.append(pieces[-1])
+    return blocks
+
+
+def _tr_html(html: str) -> str:
+    html = html.strip()
+    if not html:
+        return html
+    if len(html.encode("utf-8")) <= _DEEPL_MAX_BYTES:
+        return _tr(html, html=True)
+
+    translated: list[str] = []
+    buf = ""
+    for block in _split_html_blocks(html):
+        candidate = buf + block
+        if buf and len(candidate.encode("utf-8")) > _DEEPL_MAX_BYTES:
+            translated.append(_tr(buf, html=True))
+            buf = block
+        else:
+            buf = candidate
+    if buf:
+        translated.append(_tr(buf, html=True))
+    return "".join(translated)
 
 
 def _load_map() -> dict[str, str]:
@@ -105,8 +144,7 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
         "title": _tr(post.get("title", "")),
         "slug": _slug(post.get("title", "post")),
         "status": "draft",
-        "html": _tr(post.get("html") or "<p></p>", html=True),
-        "tags": [{"name": _tr(tag["name"])} for tag in post.get("tags", []) if tag.get("name")],
+        "html": _tr_html(post.get("html") or "<p></p>"),
     }
 
     excerpt = post.get("custom_excerpt") or post.get("excerpt")
@@ -121,10 +159,20 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
     if meta_description:
         draft["meta_description"] = draft["og_description"] = _tr(meta_description)
 
+    twitter_title = post.get("twitter_title")
+    if twitter_title:
+        draft["twitter_title"] = _tr(twitter_title)
+
+    twitter_description = post.get("twitter_description")
+    if twitter_description:
+        draft["twitter_description"] = _tr(twitter_description)
+
     if post.get("feature_image"):
         draft["feature_image"] = post["feature_image"]
     if post.get("feature_image_alt"):
         draft["feature_image_alt"] = _tr(post["feature_image_alt"])
+    if post.get("twitter_image"):
+        draft["twitter_image"] = post["twitter_image"]
 
     return draft
 
@@ -145,7 +193,7 @@ def sync_post(source_id: str) -> dict[str, Any]:
         SOURCE_KEY,
         "GET",
         f"posts/{source_id}/",
-        params={"formats": "html", "include": "tags"},
+        params={"formats": "html"},
     )["posts"][0]
 
     if post.get("status") != "published":
@@ -240,7 +288,21 @@ async def webhook(
         return {"ok": True, "skipped": True, "reason": "no post in payload"}
 
     post_id = post["id"]
-    log.info("queued sync %s", post_id)
+    log.info("queued sync %s (%s)", post_id, post.get("title", "?"))
+    background.add_task(_run_sync, post_id)
+    return {"ok": True, "queued": True, "source_post_id": post_id}
+
+
+@app.post("/sync/{post_id}")
+def manual_sync(
+    post_id: str,
+    background: BackgroundTasks,
+    x_sync_secret: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Повторная синхронизация, если webhook не дошёл (например, сервис спал)."""
+    if WEBHOOK_SECRET and x_sync_secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid X-Sync-Secret")
+    log.info("manual sync queued %s", post_id)
     background.add_task(_run_sync, post_id)
     return {"ok": True, "queued": True, "source_post_id": post_id}
 
@@ -251,3 +313,20 @@ def _run_sync(post_id: str) -> None:
         log.info("sync %s done: %s", post_id, result)
     except Exception:
         log.exception("sync %s failed", post_id)
+
+
+if __name__ == "__main__":
+    big = "<p>x</p>" * 60_000
+    assert len(big.encode("utf-8")) > _DEEPL_MAX_BYTES
+    buf, parts = "", []
+    for block in _split_html_blocks(big):
+        candidate = buf + block
+        if buf and len(candidate.encode("utf-8")) > _DEEPL_MAX_BYTES:
+            parts.append(buf)
+            buf = block
+        else:
+            buf = candidate
+    if buf:
+        parts.append(buf)
+    assert len(parts) > 1
+    assert all(len(p.encode("utf-8")) <= _DEEPL_MAX_BYTES for p in parts)

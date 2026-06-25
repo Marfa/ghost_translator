@@ -35,6 +35,19 @@ Docker: `mkdir -p data && docker compose up -d --build`
 
 Ghost ждёт ответ ~2 секунды; сервис сразу отвечает `200 OK` и переводит пост в фоне.
 
+В черновик на целевом сайте копируются: заголовок, slug, HTML, excerpt, meta/OG, X card (`twitter_title`, `twitter_description`, `twitter_image`), обложка. **Теги не копируются.** Длинный HTML (статьи с картинками) переводится частями — лимит DeepL 128 KiB на запрос.
+
+### Пропущенный пост (webhook не дошёл)
+
+Если сервис спал или webhook потерялся:
+
+```bash
+curl -X POST "https://ВАШ-ХОСТ/sync/POST_ID" \
+  -H "X-Sync-Secret: ВАШ_WEBHOOK_SECRET"
+```
+
+`POST_ID` — id поста на исходном Ghost (из URL редактора). Ответ сразу `200`, перевод идёт в фоне.
+
 ## Переменные окружения
 
 | Переменная | Назначение |
@@ -64,7 +77,7 @@ curl https://ВАШ-ХОСТ/health
 2. Заполните переменные окружения (включая `SOURCE_GHOST_URL` и `TARGET_GHOST_URL`)
 3. Webhook: `https://ghost-translator-xxxx.onrender.com/webhook/ghost`
 
-Чтобы сервис не засыпал: [UptimeRobot](https://uptimerobot.com) пингует `/health` каждые 5 минут.
+**UptimeRobot** (отдельный сервис, не в Render): [uptimerobot.com](https://uptimerobot.com) → HTTP(s) monitor → `https://ваш-сервис.onrender.com/health`, интервал **5 минут**. Без внешнего пинга free tier засыпает ~15 минут, и webhook'и теряются.
 
 ### Oracle Cloud Always Free
 
