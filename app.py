@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -224,6 +225,19 @@ def sync_post(source_id: str) -> dict[str, Any]:
     mapping = _load_map()
     target_id = mapping.get(source_id)
 
+    if not target_id:
+        by_slug = _ghost(
+            TARGET_URL,
+            TARGET_KEY,
+            "GET",
+            "posts/",
+            params={"filter": f"slug:{draft['slug']}", "limit": 1},
+        )["posts"]
+        if by_slug:
+            target_id = by_slug[0]["id"]
+            mapping[source_id] = target_id
+            _save_map(mapping)
+
     if target_id:
         saved = _ghost(
             TARGET_URL,
@@ -246,6 +260,64 @@ def sync_post(source_id: str) -> dict[str, Any]:
     mapping[source_id] = saved["id"]
     _save_map(mapping)
     return {"action": "created", "target_post_id": saved["id"], "slug": saved.get("slug")}
+
+
+def _parse_since(raw: str) -> str:
+    if "T" not in raw:
+        return f"{raw}T00:00:00.000Z"
+    return raw
+
+
+def _reconcile_since() -> str:
+    # ponytail: rolling window; cron every 6h still catches gaps within a day
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    return since.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _list_published_since(since: str) -> list[dict[str, Any]]:
+    posts: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        data = _ghost(
+            SOURCE_URL,
+            SOURCE_KEY,
+            "GET",
+            "posts/",
+            params={
+                "filter": f"status:published+published_at:>'{since}'",
+                "fields": "id,title,slug,published_at",
+                "order": "published_at desc",
+                "limit": 50,
+                "page": page,
+            },
+        )
+        posts.extend(data["posts"])
+        pagination = data.get("meta", {}).get("pagination", {})
+        if page >= pagination.get("pages", 1):
+            break
+        page += 1
+    return posts
+
+
+def reconcile() -> dict[str, Any]:
+    since = _reconcile_since()
+    mapping = _load_map()
+    missed = [p for p in _list_published_since(since) if p["id"] not in mapping]
+    results: list[dict[str, Any]] = []
+    for post in missed:
+        source_id = post["id"]
+        try:
+            result = sync_post(source_id)
+            results.append({"source_id": source_id, "title": post.get("title"), **result})
+        except Exception as exc:
+            log.exception("reconcile sync %s failed", source_id)
+            results.append({"source_id": source_id, "title": post.get("title"), "error": str(exc)})
+    return {"since": since, "missed": len(missed), "results": results}
+
+
+def _require_sync_secret(x_sync_secret: Optional[str]) -> None:
+    if WEBHOOK_SECRET and x_sync_secret != WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Invalid X-Sync-Secret")
 
 
 def _verify_signature(body: bytes, signature_header: Optional[str]) -> None:
@@ -326,11 +398,22 @@ def manual_sync(
     x_sync_secret: Optional[str] = Header(default=None),
 ) -> dict[str, Any]:
     """Повторная синхронизация, если webhook не дошёл (например, сервис спал)."""
-    if WEBHOOK_SECRET and x_sync_secret != WEBHOOK_SECRET:
-        raise HTTPException(status_code=401, detail="Invalid X-Sync-Secret")
+    _require_sync_secret(x_sync_secret)
     log.info("manual sync queued %s", post_id)
     background.add_task(_run_sync, post_id)
     return {"ok": True, "queued": True, "source_post_id": post_id}
+
+
+@app.post("/reconcile")
+def reconcile_endpoint(
+    background: BackgroundTasks,
+    x_sync_secret: Optional[str] = Header(default=None),
+) -> dict[str, Any]:
+    """Сверка постов за последние 24 часа и перевод пропущенных."""
+    _require_sync_secret(x_sync_secret)
+    log.info("reconcile queued (since %s)", _reconcile_since())
+    background.add_task(_run_reconcile)
+    return {"ok": True, "queued": True, "since": _reconcile_since()}
 
 
 def _run_sync(post_id: str) -> None:
@@ -341,7 +424,20 @@ def _run_sync(post_id: str) -> None:
         log.exception("sync %s failed", post_id)
 
 
+def _run_reconcile() -> None:
+    try:
+        result = reconcile()
+        log.info("reconcile done: missed=%s", result["missed"])
+        for item in result["results"]:
+            log.info("reconcile %s: %s", item.get("source_id"), item)
+    except Exception:
+        log.exception("reconcile failed")
+
+
 if __name__ == "__main__":
+    since = datetime.fromisoformat(_reconcile_since().replace("Z", "+00:00"))
+    assert timedelta(hours=23, minutes=59) < datetime.now(timezone.utc) - since < timedelta(hours=24, minutes=1)
+    assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
     assert _strip_tag_links('<p><a href="/tag/android/">#android</a></p><p>keep</p>') == "<p>keep</p>"
     assert _strip_tag_links("<p>#android #Quick Cursor: One-Hand Aid</p><p>keep</p>") == "<p>keep</p>"
     big = "<p>x</p>" * 60_000

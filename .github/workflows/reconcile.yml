@@ -1,0 +1,16 @@
+name: Reconcile missed posts
+
+on:
+  schedule:
+    # Every 6 hours (UTC). Enough for rare posts; wakes Render free tier.
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /reconcile
+        run: |
+          curl -sf -X POST "${{ secrets.RECONCILE_URL }}" \
+            -H "X-Sync-Secret: ${{ secrets.WEBHOOK_SECRET }}"

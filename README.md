@@ -48,6 +48,19 @@ curl -X POST "https://ВАШ-ХОСТ/sync/POST_ID" \
 
 `POST_ID` — id поста на исходном Ghost (из URL редактора). Ответ сразу `200`, перевод идёт в фоне.
 
+### Автосверка пропущенных постов
+
+Вместо постоянного пинга (UptimeRobot) можно раз в несколько часов будить Render и сверять список опубликованных постов с `map.json`:
+
+```bash
+curl -X POST "https://ВАШ-ХОСТ/reconcile" \
+  -H "X-Sync-Secret: ВАШ_WEBHOOK_SECRET"
+```
+
+Переводятся только посты **опубликованные за последние 24 часа**, которых нет в `map.json`. Уже синхронизированные пропускаются; если `map.json` сбросился, черновик ищется по slug на целевом сайте.
+
+**GitHub Actions** (файл `.github/workflows/reconcile.yml`): в Secrets репозитория задайте `RECONCILE_URL` = `https://ваш-сервис.onrender.com/reconcile` и `WEBHOOK_SECRET`. Workflow запускается каждые 6 часов и вручную (Actions → Run workflow). UptimeRobot при этом не обязателен.
+
 ## Переменные окружения
 
 | Переменная | Назначение |
@@ -57,7 +70,7 @@ curl -X POST "https://ВАШ-ХОСТ/sync/POST_ID" \
 | `TARGET_GHOST_URL` | URL целевого (английского) сайта |
 | `TARGET_GHOST_ADMIN_API_KEY` | Admin API key цели |
 | `DEEPL_API_KEY` | Перевод RU→EN |
-| `WEBHOOK_SECRET` | Подпись webhook |
+| `WEBHOOK_SECRET` | Подпись webhook и заголовок `X-Sync-Secret` |
 | `MAP_FILE` | Маппинг source→target post id (по умолчанию `map.json`) |
 
 ## Проверка
@@ -77,7 +90,7 @@ curl https://ВАШ-ХОСТ/health
 2. Заполните переменные окружения (включая `SOURCE_GHOST_URL` и `TARGET_GHOST_URL`)
 3. Webhook: `https://ghost-translator-xxxx.onrender.com/webhook/ghost`
 
-**UptimeRobot** (отдельный сервис, не в Render): [uptimerobot.com](https://uptimerobot.com) → **HTTP(s)** monitor (не «Ping») → `https://ваш-сервис.onrender.com/health`, интервал **5 минут**. Поддерживаются GET и HEAD.
+**UptimeRobot** опционален: webhook сработает сразу, если сервис не спит; иначе `/reconcile` по cron (см. выше) подхватит пропуски.
 
 ### Oracle Cloud Always Free
 
