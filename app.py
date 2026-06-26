@@ -66,6 +66,8 @@ def _ghost(base: str, key: str, method: str, path: str, **kwargs: Any) -> dict[s
         },
         **kwargs,
     )
+    if response.is_error:
+        log.error("ghost %s %s → %s %s", method, path, response.status_code, response.text[:500])
     response.raise_for_status()
     return response.json()
 
@@ -239,6 +241,13 @@ def sync_post(source_id: str) -> dict[str, Any]:
             _save_map(mapping)
 
     if target_id:
+        target_post = _ghost(
+            TARGET_URL,
+            TARGET_KEY,
+            "GET",
+            f"posts/{target_id}/",
+        )["posts"][0]
+        draft["updated_at"] = target_post["updated_at"]
         saved = _ghost(
             TARGET_URL,
             TARGET_KEY,
