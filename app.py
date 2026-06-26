@@ -17,6 +17,7 @@ import httpx
 import jwt
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
+from starlette.responses import Response
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -273,9 +274,14 @@ def _verify_signature(body: bytes, signature_header: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
 
-@app.api_route("/health", methods=["GET", "HEAD"])
+@app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.head("/health", include_in_schema=False)
+def health_head() -> Response:
+    return Response(status_code=200)
 
 
 @app.get("/status")

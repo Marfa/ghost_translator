@@ -77,7 +77,7 @@ curl https://ВАШ-ХОСТ/health
 2. Заполните переменные окружения (включая `SOURCE_GHOST_URL` и `TARGET_GHOST_URL`)
 3. Webhook: `https://ghost-translator-xxxx.onrender.com/webhook/ghost`
 
-**UptimeRobot** (отдельный сервис, не в Render): [uptimerobot.com](https://uptimerobot.com) → HTTP(s) monitor → `https://ваш-сервис.onrender.com/health`, интервал **5 минут**, метод **GET** (не HEAD — иначе 405). Без внешнего пинга free tier засыпает ~15 минут, и webhook'и теряются.
+**UptimeRobot** (отдельный сервис, не в Render): [uptimerobot.com](https://uptimerobot.com) → **HTTP(s)** monitor (не «Ping») → `https://ваш-сервис.onrender.com/health`, интервал **5 минут**. Поддерживаются GET и HEAD.
 
 ### Oracle Cloud Always Free
 
