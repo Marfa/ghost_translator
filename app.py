@@ -168,25 +168,38 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
     if excerpt:
         draft["custom_excerpt"] = _tr(excerpt)
 
-    meta_title = post.get("meta_title") or post.get("og_title")
-    if meta_title:
-        draft["meta_title"] = draft["og_title"] = _tr(meta_title)
+    meta_title_src = post.get("meta_title") or post.get("og_title")
+    if meta_title_src:
+        draft["meta_title"] = _tr(meta_title_src)
 
-    meta_description = post.get("meta_description") or post.get("og_description")
-    if meta_description:
-        draft["meta_description"] = draft["og_description"] = _tr(meta_description)
+    meta_desc_src = post.get("meta_description") or post.get("og_description")
+    if meta_desc_src:
+        draft["meta_description"] = _tr(meta_desc_src)
 
-    twitter_title_src = post.get("twitter_title") or meta_title or post.get("title")
+    # Facebook card = og_*; Ghost often leaves these null when UI reuses excerpt/meta
+    og_title_src = post.get("og_title") or post.get("meta_title") or post.get("title")
+    if og_title_src:
+        draft["og_title"] = _tr(og_title_src)
+
+    og_desc_src = (
+        post.get("og_description")
+        or post.get("meta_description")
+        or post.get("custom_excerpt")
+        or post.get("excerpt")
+    )
+    if og_desc_src:
+        draft["og_description"] = _tr(og_desc_src)
+
+    twitter_title_src = post.get("twitter_title") or post.get("og_title") or post.get("meta_title") or post.get("title")
     if twitter_title_src:
         draft["twitter_title"] = _tr(twitter_title_src)
 
-    # ponytail: Ghost often leaves twitter_description null when UI reuses excerpt/meta
     twitter_desc_src = (
         post.get("twitter_description")
+        or post.get("og_description")
+        or post.get("meta_description")
         or post.get("custom_excerpt")
         or post.get("excerpt")
-        or post.get("meta_description")
-        or post.get("og_description")
     )
     if twitter_desc_src:
         draft["twitter_description"] = _tr(twitter_desc_src)
@@ -195,6 +208,8 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
         draft["feature_image"] = post["feature_image"]
     if post.get("feature_image_alt"):
         draft["feature_image_alt"] = _tr(post["feature_image_alt"])
+    if post.get("og_image") or post.get("feature_image"):
+        draft["og_image"] = post.get("og_image") or post["feature_image"]
     if post.get("twitter_image"):
         draft["twitter_image"] = post["twitter_image"]
 

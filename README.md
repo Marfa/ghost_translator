@@ -35,7 +35,7 @@ Docker: `mkdir -p data && docker compose up -d --build`
 
 Ghost ждёт ответ ~2 секунды; сервис сразу отвечает `200 OK` и переводит пост в фоне.
 
-В черновик на целевом сайте копируются: заголовок, slug, HTML (без блока тегов `#…` внизу), excerpt, meta/OG, X card, обложка. **Теги не копируются** — в API уходит `tags: []`, ссылки `/tag/…` вырезаются из HTML (иначе Ghost создаёт их при `source=html`). X card description берётся из `twitter_description`, а если пусто — из excerpt/meta.
+В черновик на целевом сайте копируются: заголовок, slug, HTML (без блока тегов `#…` внизу), excerpt, meta/SEO, Facebook card (`og_title`, `og_description`, `og_image`), X card, обложка. **Теги не копируются** — в API уходит `tags: []`, ссылки `/tag/…` вырезаются из HTML (иначе Ghost создаёт их при `source=html`). X card description берётся из `twitter_description`, а если пусто — из excerpt/meta.
 
 ### Пропущенный пост (webhook не дошёл)
 
