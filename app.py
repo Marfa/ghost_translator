@@ -90,6 +90,17 @@ def _tr(text: str, *, html: bool = False) -> str:
 _BLOCK_END = re.compile(
     r"(</p>|</h1>|</h2>|</h3>|</h4>|</h5>|</h6>|</li>|</figure>|</blockquote>|</tr>)"
 )
+# Ghost source=html turns /tag/ links into post tags; strip them from synced HTML
+_TAG_BLOCK = re.compile(
+    r'<p>(?:\s*<a\b[^>]*\bhref="[^"]*/tag/[^"]*"[^>]*>[^<]*</a>\s*)+</p>\s*',
+    re.I,
+)
+_HASH_TAG_BLOCK = re.compile(r"<p>(?:\s*#[^<]+)+\s*</p>\s*", re.I)
+
+
+def _strip_tag_links(html: str) -> str:
+    html = _TAG_BLOCK.sub("", html)
+    return _HASH_TAG_BLOCK.sub("", html).strip()
 
 
 def _split_html_blocks(html: str) -> list[str]:
@@ -140,11 +151,13 @@ def _slug(title: str) -> str:
 
 
 def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
+    title = _tr(post.get("title", ""))
     draft: dict[str, Any] = {
-        "title": _tr(post.get("title", "")),
+        "title": title,
         "slug": _slug(post.get("title", "post")),
         "status": "draft",
-        "html": _tr_html(post.get("html") or "<p></p>"),
+        "html": _tr_html(_strip_tag_links(post.get("html") or "<p></p>")),
+        "tags": [],
     }
 
     excerpt = post.get("custom_excerpt") or post.get("excerpt")
@@ -159,13 +172,20 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
     if meta_description:
         draft["meta_description"] = draft["og_description"] = _tr(meta_description)
 
-    twitter_title = post.get("twitter_title")
-    if twitter_title:
-        draft["twitter_title"] = _tr(twitter_title)
+    twitter_title_src = post.get("twitter_title") or meta_title or post.get("title")
+    if twitter_title_src:
+        draft["twitter_title"] = _tr(twitter_title_src)
 
-    twitter_description = post.get("twitter_description")
-    if twitter_description:
-        draft["twitter_description"] = _tr(twitter_description)
+    # ponytail: Ghost often leaves twitter_description null when UI reuses excerpt/meta
+    twitter_desc_src = (
+        post.get("twitter_description")
+        or post.get("custom_excerpt")
+        or post.get("excerpt")
+        or post.get("meta_description")
+        or post.get("og_description")
+    )
+    if twitter_desc_src:
+        draft["twitter_description"] = _tr(twitter_desc_src)
 
     if post.get("feature_image"):
         draft["feature_image"] = post["feature_image"]
@@ -253,7 +273,7 @@ def _verify_signature(body: bytes, signature_header: Optional[str]) -> None:
         raise HTTPException(status_code=401, detail="Invalid webhook signature")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
@@ -316,6 +336,8 @@ def _run_sync(post_id: str) -> None:
 
 
 if __name__ == "__main__":
+    assert _strip_tag_links('<p><a href="/tag/android/">#android</a></p><p>keep</p>') == "<p>keep</p>"
+    assert _strip_tag_links("<p>#android #Quick Cursor: One-Hand Aid</p><p>keep</p>") == "<p>keep</p>"
     big = "<p>x</p>" * 60_000
     assert len(big.encode("utf-8")) > _DEEPL_MAX_BYTES
     buf, parts = "", []
