@@ -1,96 +1,109 @@
 # Ghost Translator
 
-Синхронизация постов между двумя сайтами на [Ghost](https://ghost.org/): публикуете на источнике (RU) → на целевом сайте (EN) появляется **черновик** с переводом через [DeepL](https://www.deepl.com/pro-api).
+**Опубликовали на русском Ghost — на английском появится черновик с переводом.**
 
-Один Python-файл (`app.py`), Ghost Admin API, фоновый перевод после webhook. URL сайтов задаются только через переменные окружения.
-
-## Быстрый старт
+Синхронизация двух сайтов [Ghost](https://ghost.org/) через [DeepL](https://www.deepl.com/pro-api): один Python-файл (`app.py`), webhook, фоновый перевод.
 
 ```bash
 git clone https://github.com/Marfa/ghost_translator.git
 cd ghost_translator
-cp .env.example .env   # укажите URL и ключи
+cp .env.example .env
 pip install -r requirements.txt
 uvicorn app:app --host 0.0.0.0 --port 8080
 ```
 
 Docker: `mkdir -p data && docker compose up -d --build`
 
+## Возможности
+
+| Что | Как |
+|-----|-----|
+| Автоперевод | Webhook `post.published` на `/webhook/ghost` |
+| Пропущенный пост | `POST /sync/{id}` с заголовком `X-Sync-Secret` |
+| Автосверка | `POST /reconcile` — посты за последние 24 ч, без map |
+| Длинные статьи | HTML режется на части (лимит DeepL 128 KiB) |
+
+## Что копируется в черновик
+
+| Поле | Примечание |
+|------|------------|
+| Заголовок, slug, HTML | Теги `#…` и ссылки `/tag/…` вырезаются |
+| Excerpt, meta/SEO | |
+| Facebook card | `og_title`, `og_description`, `og_image` |
+| X card | `twitter_title`, `twitter_description`, `twitter_image` |
+| Обложка | `feature_image`, alt |
+| Теги поста | **не копируются** (`tags: []`) |
+
+Card description берётся из своего поля; если в API пусто — из excerpt или meta.
+
+## Быстрый старт
+
 ### Что нужно заранее
 
-1. **Admin API keys** на обоих Ghost-сайтах: Settings → Integrations → Add custom integration
+1. **Admin API keys** на обоих Ghost: Settings → Integrations → Add custom integration
 2. **DeepL API key**: [deepl.com/pro-api](https://www.deepl.com/pro-api)
 3. **Публичный HTTPS-URL** для webhook
 
-## Webhook
+### Webhook
 
-На **исходном Ghost-сайте** → Settings → Integrations → Add webhook:
+На **исходном Ghost** → Settings → Integrations → Add webhook:
 
 | Event | URL |
 |-------|-----|
 | `post.published` | `https://ВАШ-ХОСТ/webhook/ghost` |
 | `post.published.edited` | тот же URL |
 
-**Secret** = значение `WEBHOOK_SECRET` из `.env`.
+**Secret** = `WEBHOOK_SECRET` из `.env`. Ghost ждёт ответ ~2 с; сервис сразу отвечает `200 OK` и переводит в фоне.
 
-Ghost ждёт ответ ~2 секунды; сервис сразу отвечает `200 OK` и переводит пост в фоне.
-
-В черновик на целевом сайте копируются: заголовок, slug, HTML (без блока тегов `#…` внизу), excerpt, meta/SEO, Facebook card (`og_title`, `og_description`, `og_image`), X card, обложка. **Теги не копируются** — в API уходит `tags: []`, ссылки `/tag/…` вырезаются из HTML (иначе Ghost создаёт их при `source=html`). X card description берётся из `twitter_description`, а если пусто — из excerpt/meta.
-
-### Пропущенный пост (webhook не дошёл)
-
-Если сервис спал или webhook потерялся:
+### Пропущенный пост
 
 ```bash
 curl -X POST "https://ВАШ-ХОСТ/sync/POST_ID" \
   -H "X-Sync-Secret: ВАШ_WEBHOOK_SECRET"
 ```
 
-`POST_ID` — id поста на исходном Ghost (из URL редактора). Ответ сразу `200`, перевод идёт в фоне.
+`POST_ID` — id поста в URL редактора Ghost.
 
-### Автосверка пропущенных постов
-
-Вместо постоянного пинга (UptimeRobot) можно раз в несколько часов будить Render и сверять список опубликованных постов с `map.json`:
+### Автосверка (вместо UptimeRobot)
 
 ```bash
 curl -X POST "https://ВАШ-ХОСТ/reconcile" \
   -H "X-Sync-Secret: ВАШ_WEBHOOK_SECRET"
 ```
 
-Переводятся только посты **опубликованные за последние 24 часа**, которых нет в `map.json`. Уже синхронизированные пропускаются; если `map.json` сбросился, черновик ищется по slug на целевом сайте.
+Переводятся published-посты **за последние 24 часа**, которых нет в `map.json`. Если map сбросился — черновик ищется по slug.
 
-**GitHub Actions** (файл `.github/workflows/reconcile.yml`): в Secrets репозитория задайте `RECONCILE_URL` = `https://ваш-сервис.onrender.com/reconcile` и `WEBHOOK_SECRET`. Workflow запускается каждые 6 часов и вручную (Actions → Run workflow). UptimeRobot при этом не обязателен.
+**GitHub Actions** (`.github/workflows/reconcile.yml`): Secrets → `RECONCILE_URL` = `https://ваш-сервис.onrender.com/reconcile`, `WEBHOOK_SECRET`. Запуск каждые 6 ч или вручую: Actions → Reconcile missed posts → Run workflow.
 
 ## Переменные окружения
 
 | Переменная | Назначение |
 |------------|------------|
-| `SOURCE_GHOST_URL` | URL исходного (русского) сайта |
+| `SOURCE_GHOST_URL` | URL исходного (RU) сайта |
 | `SOURCE_GHOST_ADMIN_API_KEY` | Admin API key источника |
-| `TARGET_GHOST_URL` | URL целевого (английского) сайта |
+| `TARGET_GHOST_URL` | URL целевого (EN) сайта |
 | `TARGET_GHOST_ADMIN_API_KEY` | Admin API key цели |
 | `DEEPL_API_KEY` | Перевод RU→EN |
-| `WEBHOOK_SECRET` | Подпись webhook и заголовок `X-Sync-Secret` |
-| `MAP_FILE` | Маппинг source→target post id (по умолчанию `map.json`) |
+| `WEBHOOK_SECRET` | Подпись webhook и `X-Sync-Secret` |
+| `MAP_FILE` | Маппинг source→target id (по умолчанию `map.json`) |
 
 ## Проверка
 
 ```bash
 curl https://ВАШ-ХОСТ/health
-# {"status":"ok"}
 ```
 
-Опубликуйте пост на исходном сайте — на целевом появится draft.
+Опубликуйте пост на RU — на EN появится draft.
 
 ## Деплой бесплатно
 
-### Render (проще всего)
+### Render
 
-1. [render.com](https://render.com) → **New → Blueprint** → репозиторий [Marfa/ghost_translator](https://github.com/Marfa/ghost_translator)
-2. Заполните переменные окружения (включая `SOURCE_GHOST_URL` и `TARGET_GHOST_URL`)
+1. [render.com](https://render.com) → **New → Blueprint** → [Marfa/ghost_translator](https://github.com/Marfa/ghost_translator)
+2. Заполните переменные окружения
 3. Webhook: `https://ghost-translator-xxxx.onrender.com/webhook/ghost`
 
-**UptimeRobot** опционален: webhook сработает сразу, если сервис не спит; иначе `/reconcile` по cron (см. выше) подхватит пропуски.
+UptimeRobot не обязателен: webhook сработает, если сервис не спит; иначе `/reconcile` по cron подхватит пропуски.
 
 ### Oracle Cloud Always Free
 
@@ -113,6 +126,14 @@ cloudflared tunnel --url http://localhost:8080
 
 Некоммерческое использование; производные работы — с тем же лицензированием; указание авторства обязательно.
 
-## Авторство
+## Авторство и поддержка
 
-Код разработан с помощью [Cursor](https://cursor.com).
+Код подготовлен с помощью [Cursor](https://cursor.com).
+
+[![Donate](https://img.shields.io/badge/Donate-DonationAlerts-orange)](https://www.donationalerts.com/r/themarfa)
+[![Crypto](https://img.shields.io/badge/Crypto-NOWPayments-blue)](https://nowpayments.io/donation/themarfa)
+
+Поддержка проекта:
+
+- [DonationAlerts](https://www.donationalerts.com/r/themarfa)
+- [Донат криптой (NOWPayments)](https://nowpayments.io/donation/themarfa)
