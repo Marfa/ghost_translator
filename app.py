@@ -107,6 +107,41 @@ def _strip_tag_links(html: str) -> str:
     return _HASH_TAG_BLOCK.sub("", html).strip()
 
 
+def _split_preserve_callouts(html: str) -> list[tuple[bool, str]]:
+    chunks: list[tuple[bool, str]] = []
+    pos = 0
+    while pos < len(html):
+        idx = html.find("kg-callout-card", pos)
+        if idx == -1:
+            chunks.append((True, html[pos:]))
+            break
+        div_start = html.rfind("<div", pos, idx)
+        if div_start == -1:
+            chunks.append((True, html[pos : idx + len("kg-callout-card")]))
+            pos = idx + len("kg-callout-card")
+            continue
+        if div_start > pos:
+            chunks.append((True, html[pos:div_start]))
+        depth = 0
+        end = div_start
+        i = div_start
+        while i < len(html):
+            if html[i : i + 4].lower() == "<div":
+                depth += 1
+            elif html[i : i + 6].lower() == "</div>":
+                depth -= 1
+                if depth == 0:
+                    end = i + 6
+                    break
+            i += 1
+        else:
+            chunks.append((True, html[div_start:]))
+            break
+        chunks.append((False, html[div_start:end]))
+        pos = end
+    return chunks
+
+
 def _split_html_blocks(html: str) -> list[str]:
     pieces = _BLOCK_END.split(html)
     blocks: list[str] = []
@@ -117,7 +152,7 @@ def _split_html_blocks(html: str) -> list[str]:
     return blocks
 
 
-def _tr_html(html: str) -> str:
+def _tr_html_chunk(html: str) -> str:
     html = html.strip()
     if not html:
         return html
@@ -136,6 +171,16 @@ def _tr_html(html: str) -> str:
     if buf:
         translated.append(_tr(buf, html=True))
     return "".join(translated)
+
+
+def _tr_html(html: str) -> str:
+    html = html.strip()
+    if not html:
+        return html
+    parts: list[str] = []
+    for translate, chunk in _split_preserve_callouts(html):
+        parts.append(_tr_html_chunk(chunk) if translate else chunk)
+    return "".join(parts)
 
 
 def _load_map() -> dict[str, str]:
@@ -464,6 +509,17 @@ if __name__ == "__main__":
     assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
     assert _strip_tag_links('<p><a href="/tag/android/">#android</a></p><p>keep</p>') == "<p>keep</p>"
     assert _strip_tag_links("<p>#android #Quick Cursor: One-Hand Aid</p><p>keep</p>") == "<p>keep</p>"
+    callout = (
+        '<div class="kg-card kg-callout-card kg-callout-card-accent">'
+        '<div class="kg-callout-emoji">💡</div>'
+        '<div class="kg-callout-text"><p>Не переводить</p></div></div>'
+    )
+    mixed = f"<p>Перевести</p>{callout}<p>Тоже перевести</p>"
+    assert _split_preserve_callouts(mixed) == [
+        (True, "<p>Перевести</p>"),
+        (False, callout),
+        (True, "<p>Тоже перевести</p>"),
+    ]
     big = "<p>x</p>" * 60_000
     assert len(big.encode("utf-8")) > _DEEPL_MAX_BYTES
     buf, parts = "", []
