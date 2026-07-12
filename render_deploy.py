@@ -14,8 +14,6 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 RENDER_API = "https://api.render.com/v1"
-DEFAULT_SERVICE_ID = "REDACTED_SERVICE_ID"
-SERVICE_DASHBOARD = "https://dashboard.render.com/web/REDACTED_SERVICE_ID"
 POLL_INTERVAL_SEC = 15
 DEPLOY_TIMEOUT_SEC = 900
 
@@ -80,13 +78,25 @@ def wait_for_deploy(api_key: str, service_id: str, deploy_id: str) -> dict:
     raise TimeoutError(f"Deploy {deploy_id} did not finish within {DEPLOY_TIMEOUT_SEC}s")
 
 
+def _service_id(explicit: str = "") -> str:
+    service_id = explicit.strip() or os.getenv("RENDER_SERVICE_ID", "").strip()
+    if not service_id:
+        raise RuntimeError("Missing RENDER_SERVICE_ID (env or --service-id)")
+    return service_id
+
+
+def _service_dashboard(service_id: str) -> str:
+    return f"https://dashboard.render.com/web/{service_id}"
+
+
 def _short_commit(commit_id: str) -> str:
     return commit_id[:7] if len(commit_id) >= 7 else commit_id
 
 
 def run_deploy(commit_id: str, *, service_id: str) -> tuple[int, str]:
     api_key = _render_api_key()
-    service_id = service_id or os.getenv("RENDER_SERVICE_ID", DEFAULT_SERVICE_ID)
+    service_id = _service_id(service_id)
+    dashboard = _service_dashboard(service_id)
     short = _short_commit(commit_id)
 
     logger.info("Triggering Render deploy for %s on %s", short, service_id)
@@ -99,7 +109,7 @@ def run_deploy(commit_id: str, *, service_id: str) -> tuple[int, str]:
             f"✅ Render: деплой успешен\n"
             f"Коммит: {short}\n"
             f"Deploy: {deploy_id}\n"
-            f"Service: {SERVICE_DASHBOARD}"
+            f"Service: {dashboard}"
         )
         logger.info("Deploy succeeded: %s", deploy_id)
         return 0, message
@@ -109,7 +119,7 @@ def run_deploy(commit_id: str, *, service_id: str) -> tuple[int, str]:
         f"Коммит: {short}\n"
         f"Статус: {status}\n"
         f"Deploy: {deploy_id}\n"
-        f"Service: {SERVICE_DASHBOARD}"
+        f"Service: {dashboard}"
     )
     logger.error("Deploy failed: %s status=%s", deploy_id, status)
     return 1, message
@@ -126,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", default="", help="Git commit SHA (default: HEAD)")
     parser.add_argument(
         "--service-id",
-        default=os.getenv("RENDER_SERVICE_ID", DEFAULT_SERVICE_ID),
+        default=os.getenv("RENDER_SERVICE_ID", ""),
         help="Render service ID",
     )
     args = parser.parse_args(argv)
