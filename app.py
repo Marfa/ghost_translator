@@ -107,18 +107,23 @@ def _strip_tag_links(html: str) -> str:
     return _HASH_TAG_BLOCK.sub("", html).strip()
 
 
+_PRESERVE_MARKERS = ("kg-callout-card", "kg-cta-card")
+
+
 def _split_preserve_callouts(html: str) -> list[tuple[bool, str]]:
     chunks: list[tuple[bool, str]] = []
     pos = 0
     while pos < len(html):
-        idx = html.find("kg-callout-card", pos)
-        if idx == -1:
+        hits = [(html.find(marker, pos), marker) for marker in _PRESERVE_MARKERS]
+        hits = [(idx, marker) for idx, marker in hits if idx != -1]
+        if not hits:
             chunks.append((True, html[pos:]))
             break
+        idx, marker = min(hits, key=lambda hit: hit[0])
         div_start = html.rfind("<div", pos, idx)
         if div_start == -1:
-            chunks.append((True, html[pos : idx + len("kg-callout-card")]))
-            pos = idx + len("kg-callout-card")
+            chunks.append((True, html[pos : idx + len(marker)]))
+            pos = idx + len(marker)
             continue
         if div_start > pos:
             chunks.append((True, html[pos:div_start]))
@@ -518,6 +523,17 @@ if __name__ == "__main__":
     assert _split_preserve_callouts(mixed) == [
         (True, "<p>Перевести</p>"),
         (False, callout),
+        (True, "<p>Тоже перевести</p>"),
+    ]
+    cta = (
+        '<div class="kg-card kg-cta-card kg-cta-bg-grey kg-cta-minimal kg-cta-pos-left">'
+        '<div class="kg-cta-content"><p>Не переводить CTA</p>'
+        '<a class="kg-cta-button" href="https://example.com">Подписаться</a></div></div>'
+    )
+    mixed_cta = f"<p>Перевести</p>{cta}<p>Тоже перевести</p>"
+    assert _split_preserve_callouts(mixed_cta) == [
+        (True, "<p>Перевести</p>"),
+        (False, cta),
         (True, "<p>Тоже перевести</p>"),
     ]
     big = "<p>x</p>" * 60_000
