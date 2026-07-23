@@ -97,26 +97,24 @@ curl https://ВАШ-ХОСТ/health
 
 ## Деплой на VPS (HostKey)
 
-Прод: Docker Compose на HostKey VPS + nginx + Let's Encrypt.
+Прод: Docker Compose на HostKey VPS + nginx + Let's Encrypt.  
+Публичный хост: `https://ghost-translator.themarfa.name`.
 
 ```bash
-# на сервере
+# первичная установка на сервере
 git clone https://github.com/Marfa/ghost_translator.git /opt/ghost-translator
 cd /opt/ghost-translator
 cp .env.example .env   # заполнить секреты
-mkdir -p scripts && chmod +x scripts/deploy_vps.sh
 ./scripts/deploy_vps.sh
 ```
 
-Обновление после push в `main`:
+**Автообновление:** GitHub Actions (`.github/workflows/deploy-vps.yml`) на каждый push в `main` (и вручную) по SSH запускает `scripts/deploy_vps.sh`. Secrets: `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`.
 
-```bash
-/opt/ghost-translator/scripts/deploy_vps.sh
-```
+Ручной деплой на сервере: `/opt/ghost-translator/scripts/deploy_vps.sh`.
 
-Nginx проксирует публичный HTTPS на контейнер (`127.0.0.1:8082`). Webhook / Actions:
+Webhook / reconcile:
 
-`https://ВАШ-ДОМЕН/webhook/ghost` и `https://ВАШ-ДОМЕН/reconcile`.
+`https://ghost-translator.themarfa.name/webhook/ghost` и `…/reconcile`.
 
 ### Локально / Oracle Cloud Always Free
 
