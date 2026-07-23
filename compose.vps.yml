@@ -1,0 +1,21 @@
+services:
+  ghost-translator:
+    build: .
+    ports:
+      - "8082:8080"
+    env_file:
+      - .env
+    volumes:
+      - ghost-translator-data:/app/data
+    environment:
+      MAP_FILE: /app/data/map.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+volumes:
+  ghost-translator-data:

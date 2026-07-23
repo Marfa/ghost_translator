@@ -73,7 +73,7 @@ curl -X POST "https://ВАШ-ХОСТ/reconcile" \
 
 Переводятся published-посты **за последние 24 часа**, которых нет в `map.json`. Если map сбросился — черновик ищется по slug.
 
-**GitHub Actions** (`.github/workflows/reconcile.yml`): Secrets → `RECONCILE_URL` = `https://ваш-сервис.onrender.com/reconcile`, `WEBHOOK_SECRET`. Запуск каждые 6 ч или вручую: Actions → Reconcile missed posts → Run workflow.
+**GitHub Actions** (`.github/workflows/reconcile.yml`): Secrets → `RECONCILE_URL` = `https://ваш-хост/reconcile`, `WEBHOOK_SECRET`. Запуск каждые 6 ч или вручную: Actions → Reconcile missed posts → Run workflow.
 
 ## Переменные окружения
 
@@ -95,17 +95,30 @@ curl https://ВАШ-ХОСТ/health
 
 Опубликуйте пост на RU — на EN появится draft.
 
-## Деплой бесплатно
+## Деплой на VPS (HostKey)
 
-### Render
+Прод: Docker Compose на HostKey VPS + nginx + Let's Encrypt.
 
-1. [render.com](https://render.com) → **New → Blueprint** → [Marfa/ghost_translator](https://github.com/Marfa/ghost_translator)
-2. Заполните переменные окружения
-3. Webhook: `https://ghost-translator-xxxx.onrender.com/webhook/ghost`
+```bash
+# на сервере
+git clone https://github.com/Marfa/ghost_translator.git /opt/ghost-translator
+cd /opt/ghost-translator
+cp .env.example .env   # заполнить секреты
+mkdir -p scripts && chmod +x scripts/deploy_vps.sh
+./scripts/deploy_vps.sh
+```
 
-UptimeRobot не обязателен: webhook сработает, если сервис не спит; иначе `/reconcile` по cron подхватит пропуски.
+Обновление после push в `main`:
 
-### Oracle Cloud Always Free
+```bash
+/opt/ghost-translator/scripts/deploy_vps.sh
+```
+
+Nginx проксирует публичный HTTPS на контейнер (`127.0.0.1:8082`). Webhook / Actions:
+
+`https://ВАШ-ДОМЕН/webhook/ghost` и `https://ВАШ-ДОМЕН/reconcile`.
+
+### Локально / Oracle Cloud Always Free
 
 ```bash
 git clone https://github.com/Marfa/ghost_translator.git && cd ghost_translator

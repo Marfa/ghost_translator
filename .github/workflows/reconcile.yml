@@ -2,7 +2,7 @@ name: Reconcile missed posts
 
 on:
   schedule:
-    # Every 6 hours (UTC). Enough for rare posts; wakes Render free tier.
+    # Every 6 hours (UTC). Hits the VPS /reconcile endpoint.
     - cron: "0 */6 * * *"
   workflow_dispatch:
 
