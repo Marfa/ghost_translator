@@ -266,6 +266,13 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
     return draft
 
 
+def _preserve_target_state(payload: dict[str, Any], target_post: dict[str, Any]) -> dict[str, Any]:
+    # source edit must not unpublish an already-live EN post
+    payload["updated_at"] = target_post["updated_at"]
+    payload["status"] = target_post.get("status") or "draft"
+    return payload
+
+
 def sync_post(source_id: str) -> dict[str, Any]:
     for name, value in {
         "SOURCE_GHOST_URL": SOURCE_URL,
@@ -312,14 +319,13 @@ def sync_post(source_id: str) -> dict[str, Any]:
             "GET",
             f"posts/{target_id}/",
         )["posts"][0]
-        draft["updated_at"] = target_post["updated_at"]
         saved = _ghost(
             TARGET_URL,
             TARGET_KEY,
             "PUT",
             f"posts/{target_id}/",
             params={"source": "html"},
-            json={"posts": [draft]},
+            json={"posts": [_preserve_target_state(draft, target_post)]},
         )["posts"][0]
         return {"action": "updated", "target_post_id": saved["id"], "slug": saved.get("slug")}
 
@@ -509,6 +515,12 @@ def _run_reconcile() -> None:
 
 
 if __name__ == "__main__":
+    assert (
+        _preserve_target_state({"status": "draft"}, {"updated_at": "t", "status": "published"})[
+            "status"
+        ]
+        == "published"
+    )
     since = datetime.fromisoformat(_reconcile_since().replace("Z", "+00:00"))
     assert timedelta(hours=23, minutes=59) < datetime.now(timezone.utc) - since < timedelta(hours=24, minutes=1)
     assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
