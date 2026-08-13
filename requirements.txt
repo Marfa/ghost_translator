@@ -7,5 +7,5 @@ python-dotenv>=1.2.2
 # fastapi still allows older starlette; pin the CVE floor directly
 starlette>=1.3.1
 click>=8.3.3
-requests>=2.33.0
+requests>=2.34.2
 urllib3>=2.7.0
