@@ -22,6 +22,7 @@ Docker: `mkdir -p data && docker compose up -d --build`
 | Пропущенный пост | `POST /sync/{id}` с заголовком `X-Sync-Secret` |
 | Автосверка | `POST /reconcile` — посты за последние 24 ч, без map |
 | Длинные статьи | HTML режется на части (лимит DeepL 128 KiB) |
+| AI-пометки | Layer A: невидимый Unicode + AI meta в HTML до перевода ([watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover)) |
 
 ## Что копируется в черновик
 

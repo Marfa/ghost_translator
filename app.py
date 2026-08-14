@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -19,6 +20,12 @@ import jwt
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 from starlette.responses import Response
+
+_WM_DIR = Path(__file__).resolve().parent / "vendor" / "wm"
+sys.path.insert(0, str(_WM_DIR))
+from text_unicode import clean_text as _wm_clean_text  # noqa: E402
+from wm_html import clean_html as _wm_clean_html  # noqa: E402
+sys.path.pop(0)
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -105,6 +112,45 @@ _HASH_TAG_BLOCK = re.compile(r"<p>(?:\s*#[^<]+)+\s*</p>\s*", re.I)
 def _strip_tag_links(html: str) -> str:
     html = _TAG_BLOCK.sub("", html)
     return _HASH_TAG_BLOCK.sub("", html).strip()
+
+
+_WM_TEXT_FIELDS = (
+    "title",
+    "custom_excerpt",
+    "excerpt",
+    "meta_title",
+    "meta_description",
+    "og_title",
+    "og_description",
+    "twitter_title",
+    "twitter_description",
+    "feature_image_alt",
+)
+
+
+def _strip_watermarks_text(text: str) -> str:
+    if not text:
+        return text
+    cleaned, _ = _wm_clean_text(text)
+    return cleaned
+
+
+def _strip_watermarks_html(html: str) -> str:
+    if not html:
+        return html
+    cleaned, _ = _wm_clean_html(html)
+    cleaned, _ = _wm_clean_text(cleaned)
+    return cleaned
+
+
+def _strip_source_watermarks(post: dict[str, Any]) -> dict[str, Any]:
+    out = dict(post)
+    for key in _WM_TEXT_FIELDS:
+        if out.get(key):
+            out[key] = _strip_watermarks_text(out[key])
+    if out.get("html"):
+        out["html"] = _strip_watermarks_html(out["html"])
+    return out
 
 
 _PRESERVE_MARKERS = ("kg-callout-card", "kg-cta-card")
@@ -295,6 +341,7 @@ def sync_post(source_id: str) -> dict[str, Any]:
     if post.get("status") != "published":
         return {"skipped": True, "reason": "not published"}
 
+    post = _strip_source_watermarks(post)
     draft = _build_draft(post)
     mapping = _load_map()
     target_id = mapping.get(source_id)
@@ -526,6 +573,11 @@ if __name__ == "__main__":
     assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
     assert _strip_tag_links('<p><a href="/tag/android/">#android</a></p><p>keep</p>') == "<p>keep</p>"
     assert _strip_tag_links("<p>#android #Quick Cursor: One-Hand Aid</p><p>keep</p>") == "<p>keep</p>"
+    zwsp = "hello\u200bworld"
+    assert _strip_watermarks_text(zwsp) == "helloworld"
+    ai_html = '<p>ok</p><meta name="generator" content="Claude">'
+    assert "Claude" not in _strip_watermarks_html(ai_html)
+    assert "<p>ok</p>" in _strip_watermarks_html(ai_html)
     callout = (
         '<div class="kg-card kg-callout-card kg-callout-card-accent">'
         '<div class="kg-callout-emoji">💡</div>'
