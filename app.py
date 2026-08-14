@@ -8,11 +8,14 @@ import json
 import logging
 import os
 import re
+import struct
 import sys
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
 
 import deepl
 import httpx
@@ -25,6 +28,7 @@ _WM_DIR = Path(__file__).resolve().parent / "vendor" / "wm"
 sys.path.insert(0, str(_WM_DIR))
 from text_unicode import clean_text as _wm_clean_text  # noqa: E402
 from wm_html import clean_html as _wm_clean_html  # noqa: E402
+from wm_image import clean_image_bytes as _wm_clean_image_bytes  # noqa: E402
 sys.path.pop(0)
 
 load_dotenv()
@@ -77,6 +81,119 @@ def _ghost(base: str, key: str, method: str, path: str, **kwargs: Any) -> dict[s
         log.error("ghost %s %s → %s %s", method, path, response.status_code, response.text[:500])
     response.raise_for_status()
     return response.json()
+
+
+def _cover_filename(url: str, fmt: str) -> str:
+    name = Path(unquote(urlparse(url).path)).name or "cover"
+    stem = Path(name).stem or "cover"
+    if fmt == "png":
+        return f"{stem}.png"[:200]
+    if fmt == "jpeg":
+        return f"{stem}.jpg"[:200]
+    return name[:200] or "cover"
+
+
+def _cover_content_type(fmt: str, fallback: str | None) -> str:
+    if fmt == "png":
+        return "image/png"
+    if fmt == "jpeg":
+        return "image/jpeg"
+    if fallback and fallback.startswith("image/"):
+        return fallback.split(";")[0].strip()
+    return "application/octet-stream"
+
+
+def _ghost_upload_image(
+    base: str,
+    key: str,
+    data: bytes,
+    filename: str,
+    content_type: str,
+) -> str:
+    response = http.post(
+        f"{base}/ghost/api/admin/images/upload/",
+        headers={
+            "Authorization": f"Ghost {_ghost_token(key)}",
+            "Accept-Version": "v5.0",
+        },
+        files={"file": (filename, data, content_type)},
+        data={"purpose": "image", "ref": filename},
+    )
+    if response.is_error:
+        log.error("ghost upload image %s → %s %s", base, response.status_code, response.text[:500])
+    response.raise_for_status()
+    images = response.json().get("images") or []
+    if not images or not images[0].get("url"):
+        raise RuntimeError("Ghost image upload returned no url")
+    return images[0]["url"]
+
+
+def _cover_was_scrubbed(actions: list[str]) -> bool:
+    return any(a.startswith("drop") for a in actions)
+
+
+def _apply_cover_url(post: dict[str, Any], old_url: str, new_url: str) -> None:
+    post["feature_image"] = new_url
+    post["og_image"] = new_url
+    post["twitter_image"] = new_url
+    html = post.get("html")
+    if isinstance(html, str) and old_url in html:
+        post["html"] = html.replace(old_url, new_url)
+
+
+def _update_source_cover(
+    post: dict[str, Any],
+    old_url: str,
+    new_url: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "updated_at": post["updated_at"],
+        "feature_image": new_url,
+        "og_image": new_url,
+        "twitter_image": new_url,
+    }
+    params: dict[str, str] = {}
+    html = post.get("html")
+    if isinstance(html, str) and old_url in html:
+        payload["html"] = html.replace(old_url, new_url)
+        params["source"] = "html"
+    saved = _ghost(
+        SOURCE_URL,
+        SOURCE_KEY,
+        "PUT",
+        f"posts/{post['id']}/",
+        params=params,
+        json={"posts": [payload]},
+    )["posts"][0]
+    return saved
+
+
+def _scrub_and_relocate_cover(post: dict[str, Any]) -> str | None:
+    """Strip cover C2PA; replace on RU when dirty; upload clean copy to EN. Returns EN URL."""
+    old_url = post.get("feature_image")
+    if not old_url:
+        return None
+    fetch_url = f"{SOURCE_URL}{old_url}" if old_url.startswith("/") else old_url
+    response = http.get(fetch_url)
+    if response.is_error:
+        log.error("cover download %s → %s", fetch_url, response.status_code)
+    response.raise_for_status()
+    cleaned, actions, fmt = _wm_clean_image_bytes(response.content)
+    log.info("cover scrub %s (%s): %s", fetch_url, fmt, "; ".join(actions[:6]))
+    filename = _cover_filename(fetch_url, fmt)
+    content_type = _cover_content_type(fmt, response.headers.get("content-type"))
+
+    # Only rewrite RU when metadata was actually dropped — avoids webhook edit loops
+    if _cover_was_scrubbed(actions):
+        source_url = _ghost_upload_image(
+            SOURCE_URL, SOURCE_KEY, cleaned, filename, content_type
+        )
+        saved = _update_source_cover(post, old_url, source_url)
+        _apply_cover_url(post, old_url, source_url)
+        post["updated_at"] = saved["updated_at"]
+        log.info("source cover replaced everywhere %s → %s", old_url, source_url)
+
+    return _ghost_upload_image(TARGET_URL, TARGET_KEY, cleaned, filename, content_type)
 
 
 # ponytail: DeepL request body cap is 128 KiB; stay under with margin for JSON overhead
@@ -301,13 +418,13 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
         draft["twitter_description"] = _tr(twitter_desc_src)
 
     if post.get("feature_image"):
-        draft["feature_image"] = post["feature_image"]
+        cover = _scrub_and_relocate_cover(post)
+        if cover:
+            draft["feature_image"] = cover
+            draft["og_image"] = cover
+            draft["twitter_image"] = cover
     if post.get("feature_image_alt"):
         draft["feature_image_alt"] = _tr(post["feature_image_alt"])
-    if post.get("og_image") or post.get("feature_image"):
-        draft["og_image"] = post.get("og_image") or post["feature_image"]
-    if post.get("twitter_image"):
-        draft["twitter_image"] = post["twitter_image"]
 
     return draft
 
@@ -578,6 +695,37 @@ if __name__ == "__main__":
     ai_html = '<p>ok</p><meta name="generator" content="Claude">'
     assert "Claude" not in _strip_watermarks_html(ai_html)
     assert "<p>ok</p>" in _strip_watermarks_html(ai_html)
+
+    def _png_chunk(ctype: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(ctype)
+        crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + ctype + payload + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    idat = zlib.compress(b"\x00\x00\x00\x00")
+    dirty_png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", ihdr)
+        + _png_chunk(b"tEXt", b"Software\x00Claude")
+        + _png_chunk(b"IDAT", idat)
+        + _png_chunk(b"IEND", b"")
+    )
+    cleaned_png, png_actions, png_fmt = _wm_clean_image_bytes(dirty_png)
+    assert png_fmt == "png"
+    assert b"Claude" not in cleaned_png
+    assert any("tEXt" in a for a in png_actions)
+    assert _cover_was_scrubbed(png_actions)
+    assert not _cover_was_scrubbed(["no PNG metadata chunks removed (already clean or none matched)"])
+    sample = {
+        "feature_image": "https://ru.example/old.png",
+        "og_image": "https://ru.example/other.png",
+        "twitter_image": None,
+        "html": '<p><img src="https://ru.example/old.png"></p>',
+    }
+    _apply_cover_url(sample, "https://ru.example/old.png", "https://ru.example/clean.png")
+    assert sample["feature_image"] == sample["og_image"] == sample["twitter_image"] == "https://ru.example/clean.png"
+    assert "old.png" not in sample["html"]
+    assert _cover_filename("https://cdn.example/x/photo.webp", "jpeg") == "photo.jpg"
     callout = (
         '<div class="kg-card kg-callout-card kg-callout-card-accent">'
         '<div class="kg-callout-emoji">💡</div>'

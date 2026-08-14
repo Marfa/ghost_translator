@@ -23,6 +23,7 @@ Docker: `mkdir -p data && docker compose up -d --build`
 | Автосверка | `POST /reconcile` — посты за последние 24 ч, без map |
 | Длинные статьи | HTML режется на части (лимит DeepL 128 KiB) |
 | AI-пометки | Layer A: невидимый Unicode + AI meta в HTML до перевода ([watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover)) |
+| Обложка | Скачать → снять C2PA → при грязной метке заменить на RU (`feature`/`og`/`twitter` + HTML) → залить на EN |
 
 ## Что копируется в черновик
 
@@ -32,7 +33,7 @@ Docker: `mkdir -p data && docker compose up -d --build`
 | Excerpt, meta/SEO | |
 | Facebook card | `og_title`, `og_description`, `og_image` |
 | X card | `twitter_title`, `twitter_description`, `twitter_image` |
-| Обложка | `feature_image`, alt |
+| Обложка | на RU при необходимости заменяется очищенной; на EN — заливка (`feature` = `og` = `twitter`), alt |
 | Теги поста | **не копируются** (`tags: []`) |
 
 Card description берётся из своего поля; если в API пусто — из excerpt или meta.
