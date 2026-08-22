@@ -1,5 +1,4 @@
 .env
-.cursor/rules/
 __pycache__/
 .venv/
 data/
