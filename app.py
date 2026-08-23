@@ -223,7 +223,8 @@ _TAG_BLOCK = re.compile(
     r'<p>(?:\s*<a\b[^>]*\bhref="[^"]*/tag/[^"]*"[^>]*>[^<]*</a>\s*)+</p>\s*',
     re.I,
 )
-_HASH_TAG_BLOCK = re.compile(r"<p>(?:\s*#[^<]+)+\s*</p>\s*", re.I)
+# #[^<]+ already spans "#a #b"; nested (?:\s*#…)+ was ReDoS-prone
+_HASH_TAG_BLOCK = re.compile(r"<p>\s*#[^<]+</p>\s*", re.I)
 
 
 def _strip_tag_links(html: str) -> str:
