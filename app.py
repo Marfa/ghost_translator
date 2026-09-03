@@ -368,8 +368,30 @@ def _slug(title: str) -> str:
     return slug[:240] or "post"
 
 
+# Ghost Admin API maxLength (422 if DeepL expands past these)
+_GHOST_MAX = {
+    "title": 255,
+    "custom_excerpt": 300,
+    "meta_title": 300,
+    "meta_description": 500,
+    "og_title": 300,
+    "og_description": 500,
+    "twitter_title": 300,
+    "twitter_description": 500,
+    "feature_image_alt": 125,
+}
+
+
+def _clip(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    if limit <= 1:
+        return text[:limit]
+    return text[: limit - 1].rstrip() + "…"
+
+
 def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
-    title = _tr(post.get("title", ""))
+    title = _clip(_tr(post.get("title", "")), _GHOST_MAX["title"])
     draft: dict[str, Any] = {
         "title": title,
         "slug": _slug(post.get("title", "post")),
@@ -380,20 +402,20 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
 
     excerpt = post.get("custom_excerpt") or post.get("excerpt")
     if excerpt:
-        draft["custom_excerpt"] = _tr(excerpt)
+        draft["custom_excerpt"] = _clip(_tr(excerpt), _GHOST_MAX["custom_excerpt"])
 
     meta_title_src = post.get("meta_title") or post.get("og_title")
     if meta_title_src:
-        draft["meta_title"] = _tr(meta_title_src)
+        draft["meta_title"] = _clip(_tr(meta_title_src), _GHOST_MAX["meta_title"])
 
     meta_desc_src = post.get("meta_description") or post.get("og_description")
     if meta_desc_src:
-        draft["meta_description"] = _tr(meta_desc_src)
+        draft["meta_description"] = _clip(_tr(meta_desc_src), _GHOST_MAX["meta_description"])
 
     # Facebook card = og_*; Ghost often leaves these null when UI reuses excerpt/meta
     og_title_src = post.get("og_title") or post.get("meta_title") or post.get("title")
     if og_title_src:
-        draft["og_title"] = _tr(og_title_src)
+        draft["og_title"] = _clip(_tr(og_title_src), _GHOST_MAX["og_title"])
 
     og_desc_src = (
         post.get("og_description")
@@ -402,11 +424,11 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
         or post.get("excerpt")
     )
     if og_desc_src:
-        draft["og_description"] = _tr(og_desc_src)
+        draft["og_description"] = _clip(_tr(og_desc_src), _GHOST_MAX["og_description"])
 
     twitter_title_src = post.get("twitter_title") or post.get("og_title") or post.get("meta_title") or post.get("title")
     if twitter_title_src:
-        draft["twitter_title"] = _tr(twitter_title_src)
+        draft["twitter_title"] = _clip(_tr(twitter_title_src), _GHOST_MAX["twitter_title"])
 
     twitter_desc_src = (
         post.get("twitter_description")
@@ -416,7 +438,9 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
         or post.get("excerpt")
     )
     if twitter_desc_src:
-        draft["twitter_description"] = _tr(twitter_desc_src)
+        draft["twitter_description"] = _clip(
+            _tr(twitter_desc_src), _GHOST_MAX["twitter_description"]
+        )
 
     if post.get("feature_image"):
         cover = _scrub_and_relocate_cover(post)
@@ -425,7 +449,9 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
             draft["og_image"] = cover
             draft["twitter_image"] = cover
     if post.get("feature_image_alt"):
-        draft["feature_image_alt"] = _tr(post["feature_image_alt"])
+        draft["feature_image_alt"] = _clip(
+            _tr(post["feature_image_alt"]), _GHOST_MAX["feature_image_alt"]
+        )
 
     return draft
 
@@ -686,6 +712,9 @@ if __name__ == "__main__":
         ]
         == "published"
     )
+    assert _clip("short", 300) == "short"
+    assert len(_clip("x" * 400, 300)) == 300
+    assert _clip("x" * 400, 300).endswith("…")
     since = datetime.fromisoformat(_reconcile_since().replace("Z", "+00:00"))
     assert timedelta(hours=23, minutes=59) < datetime.now(timezone.utc) - since < timedelta(hours=24, minutes=1)
     assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
