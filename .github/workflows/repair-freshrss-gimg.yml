@@ -20,48 +20,36 @@ jobs:
           script: |
             set -euo pipefail
             CONF=/etc/nginx/sites-enabled/freshrss
-            echo "=== trying backups for a good freshrss config ==="
-            restored=
-            for bak in $(ls -1t ${CONF}.bak.* 2>/dev/null); do
-              echo "try $bak"
-              cp -a "$bak" "$CONF"
-              if nginx -t 2>/dev/null; then
-                echo "GOOD: $bak"
-                restored=$bak
-                break
-              fi
-              echo "bad: $bak"
+            BAKDIR=/root/nginx-site-backups
+            mkdir -p "$BAKDIR"
+
+            echo "=== move *.bak.* out of sites-enabled (nginx includes them!) ==="
+            shopt -s nullglob
+            for bak in /etc/nginx/sites-enabled/*.bak.*; do
+              echo "moving $bak"
+              mv -f "$bak" "$BAKDIR/"
             done
-            if [[ -z "${restored}" ]]; then
-              echo "No good bak; dedupe upstream includes and strip ghost fragments"
-              python3 -c '
-            from pathlib import Path
-            p = Path("/etc/nginx/sites-enabled/freshrss")
-            lines = p.read_text().splitlines(True)
-            out = []
-            seen = False
-            skip_block = False
-            for line in lines:
-                if "ghost-img-proxy:gimg:begin" in line:
-                    skip_block = True
-                    continue
-                if skip_block:
-                    if "ghost-img-proxy:gimg:end" in line:
-                        skip_block = False
-                    continue
-                if "ghost-img-gimg.conf" in line:
-                    continue
-                if "freshrss-upstream.conf" in line:
-                    if seen:
-                        continue
-                    seen = True
-                out.append(line)
-            p.write_text("".join(out))
-            print("cleaned freshrss config")
-            '
-              nginx -t
+            # also sites-available
+            for bak in /etc/nginx/sites-available/*.bak.*; do
+              echo "moving $bak"
+              mv -f "$bak" "$BAKDIR/"
+            done
+
+            echo "=== nginx -t after moving backups ==="
+            if ! nginx -t; then
+              echo "Still broken; try restoring freshrss from moved backups"
+              for bak in $(ls -1t "$BAKDIR"/freshrss.bak.* 2>/dev/null); do
+                echo "try $bak"
+                cp -a "$bak" "$CONF"
+                if nginx -t 2>/dev/null; then
+                  echo "GOOD restore: $bak"
+                  break
+                fi
+              done
             fi
+            nginx -t
             systemctl reload nginx
+
             echo "=== pull ghost-img-proxy and install ==="
             APP=/opt/ghost-img-proxy
             if [[ -d $APP/.git ]]; then
@@ -70,6 +58,17 @@ jobs:
               git clone https://github.com/Marfa/ghost-img-proxy.git $APP
               cd $APP
             fi
+            # Install writes new baks next to conf — keep them OUT of sites-enabled
             bash scripts/install_vps.sh
-            curl -sS -o /dev/null -w "feeds_gimg=%{http_code}\n" --connect-timeout 10 --max-time 30 \
-              "https://feeds.themarfa.name/gimg/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg"
+            # Move any new baks immediately
+            for bak in /etc/nginx/sites-enabled/*.bak.*; do
+              [[ -e "$bak" ]] || continue
+              mv -f "$bak" "$BAKDIR/"
+            done
+            nginx -t
+            systemctl reload nginx
+
+            code=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 10 --max-time 30 \
+              "https://feeds.themarfa.name/gimg/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg" || echo fail)
+            echo "feeds_gimg=$code"
+            test "$code" = "200"
