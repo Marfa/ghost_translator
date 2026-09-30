@@ -1,0 +1,73 @@
+name: VPS logs
+
+on:
+  workflow_dispatch:
+    inputs:
+      tail:
+        description: "How many log lines to fetch"
+        required: false
+        default: "200"
+        type: string
+      since:
+        description: "docker --since window (e.g. 48h, 7d). Empty = no filter"
+        required: false
+        default: "48h"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vps-logs
+  cancel-in-progress: true
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch ghost-translator logs over SSH
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          script_stop: true
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            cd /opt/ghost-translator
+
+            TAIL='${{ inputs.tail }}'
+            SINCE='${{ inputs.since }}'
+            case "$TAIL" in
+              ''|*[!0-9]*) TAIL=200 ;;
+            esac
+
+            echo "=== compose ps ==="
+            docker compose -f compose.vps.yml ps
+
+            echo
+            echo "=== /health ==="
+            curl -fsS http://127.0.0.1:8082/health || true
+            echo
+
+            echo
+            echo "=== /status ==="
+            curl -fsS http://127.0.0.1:8082/status || true
+            echo
+
+            LOG_ARGS=(--tail "$TAIL" --no-color)
+            if [[ -n "$SINCE" ]]; then
+              LOG_ARGS+=(--since "$SINCE")
+            fi
+
+            echo
+            echo "=== logs ghost-translator (tail=$TAIL since=${SINCE:-none}) ==="
+            docker compose -f compose.vps.yml logs "${LOG_ARGS[@]}" ghost-translator
+
+            echo
+            echo "=== recent sync/reconcile/DeepL lines ==="
+            docker compose -f compose.vps.yml logs "${LOG_ARGS[@]}" ghost-translator \
+              | grep -Eih 'sync |reconcile|deepl|error|exception|failed|451|456|429|403' \
+              || echo "(no matching lines)"
