@@ -79,14 +79,12 @@ jobs:
       - name: Public smoke
         run: |
           set -euo pipefail
-          for i in 1 2 3 4 5 6 7 8 9 10; do
-            if curl -fsS --connect-timeout 5 https://img.themarfa.name/health; then
-              echo
-              break
-            fi
-            sleep 3
-          done
+          # Interim path proxy (always expected after install)
           code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 45 \
-            'https://img.themarfa.name/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' || echo fail)
-          echo "smoke_http_code=$code"
+            'https://feeds.themarfa.name/gimg/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' || echo fail)
+          echo "feeds_gimg_http_code=$code"
           test "$code" = "200"
+          # Dedicated host when DNS+TLS are ready
+          img_code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+            'https://img.themarfa.name/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' || echo skip)
+          echo "img_http_code=$img_code"
