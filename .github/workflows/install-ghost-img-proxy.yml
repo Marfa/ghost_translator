@@ -1,0 +1,92 @@
+name: Install ghost-img-proxy
+
+on:
+  workflow_dispatch:
+    inputs:
+      cloudflare_api_token:
+        description: "Cloudflare API token (Zone DNS Edit) to create img.themarfa.name A record"
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: install-ghost-img-proxy
+  cancel-in-progress: false
+
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cloudflare DNS A img.themarfa.name
+        env:
+          CF_TOKEN: ${{ inputs.cloudflare_api_token }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CF_TOKEN}" ]]; then
+            echo "No CF token input — assuming DNS already exists or will be created manually"
+            exit 0
+          fi
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          token = os.environ["CF_TOKEN"]
+          def cf(method, path, body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(
+                  f"https://api.cloudflare.com/client/v4{path}",
+                  data=data,
+                  headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+                  method=method,
+              )
+              with urllib.request.urlopen(req, timeout=30) as resp:
+                  return json.load(resp)
+          zones = cf("GET", "/zones?name=themarfa.name")
+          zone_id = zones["result"][0]["id"]
+          existing = cf("GET", f"/zones/{zone_id}/dns_records?name=img.themarfa.name&type=A")
+          payload = {"type":"A","name":"img","content":"152.114.195.134","ttl":300,"proxied":False,
+                     "comment":"Ghost storage.ghost.io image failover proxy"}
+          if existing.get("result"):
+              rid = existing["result"][0]["id"]
+              out = cf("PUT", f"/zones/{zone_id}/dns_records/{rid}", payload)
+              print("updated", out["result"]["content"], "proxied", out["result"]["proxied"])
+          else:
+              out = cf("POST", f"/zones/{zone_id}/dns_records", payload)
+              print("created", out["result"]["content"], "proxied", out["result"]["proxied"])
+          PY
+
+      - name: Install proxy on VPS
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          script_stop: true
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            APP=/opt/ghost-img-proxy
+            if [[ -d "$APP/.git" ]]; then
+              cd "$APP"
+              git fetch --prune origin
+              git reset --hard origin/main
+            else
+              git clone https://github.com/Marfa/ghost-img-proxy.git "$APP"
+              cd "$APP"
+            fi
+            bash scripts/install_vps.sh
+
+      - name: Public smoke
+        run: |
+          set -euo pipefail
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS --connect-timeout 5 https://img.themarfa.name/health; then
+              echo
+              break
+            fi
+            sleep 3
+          done
+          code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 45 \
+            'https://img.themarfa.name/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' || echo fail)
+          echo "smoke_http_code=$code"
+          test "$code" = "200"
