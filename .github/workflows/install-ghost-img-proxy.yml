@@ -28,8 +28,10 @@ jobs:
             exit 0
           fi
           python3 - <<'PY'
-          import json, os, urllib.request, urllib.error
+          import json, os, socket, urllib.request
           token = os.environ["CF_TOKEN"]
+          def resolve(host):
+              return socket.getaddrinfo(host, None, socket.AF_INET)[0][4][0]
           def cf(method, path, body=None):
               data = None if body is None else json.dumps(body).encode()
               req = urllib.request.Request(
@@ -40,10 +42,11 @@ jobs:
               )
               with urllib.request.urlopen(req, timeout=30) as resp:
                   return json.load(resp)
+          content = resolve("bot.themarfa.name")
           zones = cf("GET", "/zones?name=themarfa.name")
           zone_id = zones["result"][0]["id"]
           existing = cf("GET", f"/zones/{zone_id}/dns_records?name=img.themarfa.name&type=A")
-          payload = {"type":"A","name":"img","content":"152.114.195.134","ttl":300,"proxied":False,
+          payload = {"type":"A","name":"img","content":content,"ttl":300,"proxied":False,
                      "comment":"Ghost storage.ghost.io image failover proxy"}
           if existing.get("result"):
               rid = existing["result"][0]["id"]
@@ -78,12 +81,17 @@ jobs:
       - name: Public smoke
         run: |
           set -euo pipefail
-          # Interim path proxy (always expected after install)
           code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 15 --max-time 45 \
             'https://feeds.themarfa.name/gimg/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' || echo fail)
           echo "feeds_gimg_http_code=$code"
           test "$code" = "200"
-          # Dedicated host when DNS+TLS are ready
-          img_code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
-            'https://img.themarfa.name/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' || echo skip)
-          echo "img_http_code=$img_code"
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            img_code=$(curl -sS -o /dev/null -w '%{http_code}' --connect-timeout 10 --max-time 30 \
+              'https://img.themarfa.name/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' || echo fail)
+            echo "img_http_code=$img_code attempt=$i"
+            if [[ "$img_code" == "200" ]]; then
+              exit 0
+            fi
+            sleep 5
+          done
+          exit 1
