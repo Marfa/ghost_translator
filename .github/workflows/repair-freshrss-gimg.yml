@@ -1,0 +1,75 @@
+name: Repair FreshRSS nginx + install gimg
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repair freshrss site and install gimg
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            CONF=/etc/nginx/sites-enabled/freshrss
+            echo "=== trying backups for a good freshrss config ==="
+            restored=
+            for bak in $(ls -1t ${CONF}.bak.* 2>/dev/null); do
+              echo "try $bak"
+              cp -a "$bak" "$CONF"
+              if nginx -t 2>/dev/null; then
+                echo "GOOD: $bak"
+                restored=$bak
+                break
+              fi
+              echo "bad: $bak"
+            done
+            if [[ -z "${restored}" ]]; then
+              echo "No good bak; dedupe upstream includes and strip ghost fragments"
+              python3 -c '
+            from pathlib import Path
+            p = Path("/etc/nginx/sites-enabled/freshrss")
+            lines = p.read_text().splitlines(True)
+            out = []
+            seen = False
+            skip_block = False
+            for line in lines:
+                if "ghost-img-proxy:gimg:begin" in line:
+                    skip_block = True
+                    continue
+                if skip_block:
+                    if "ghost-img-proxy:gimg:end" in line:
+                        skip_block = False
+                    continue
+                if "ghost-img-gimg.conf" in line:
+                    continue
+                if "freshrss-upstream.conf" in line:
+                    if seen:
+                        continue
+                    seen = True
+                out.append(line)
+            p.write_text("".join(out))
+            print("cleaned freshrss config")
+            '
+              nginx -t
+            fi
+            systemctl reload nginx
+            echo "=== pull ghost-img-proxy and install ==="
+            APP=/opt/ghost-img-proxy
+            if [[ -d $APP/.git ]]; then
+              cd $APP && git fetch --prune origin && git reset --hard origin/main
+            else
+              git clone https://github.com/Marfa/ghost-img-proxy.git $APP
+              cd $APP
+            fi
+            bash scripts/install_vps.sh
+            curl -sS -o /dev/null -w "feeds_gimg=%{http_code}\n" --connect-timeout 10 --max-time 30 \
+              "https://feeds.themarfa.name/gimg/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg"
