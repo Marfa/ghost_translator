@@ -1,0 +1,33 @@
+name: Debug ghost img proxy
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Debug from VPS
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 5m
+          script: |
+            set -euo pipefail
+            echo "=== curl storage.ghost.io from VPS ==="
+            curl -sSI --connect-timeout 10 --max-time 20 \
+              'https://storage.ghost.io/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' \
+              | head -n 20 || echo FAIL_STORAGE
+            echo "=== curl feeds /gimg ==="
+            curl -sSI --connect-timeout 10 --max-time 20 \
+              'https://feeds.themarfa.name/gimg/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' \
+              | head -n 20 || echo FAIL_GIMG
+            echo "=== nginx error log tail ==="
+            tail -n 40 /var/log/nginx/error.log || true
+            echo "=== gimg location in freshrss ==="
+            grep -n -A2 -B2 'gimg\|ghost-img' /etc/nginx/sites-enabled/freshrss | head -n 80 || true
