@@ -44,6 +44,15 @@ jobs:
               ''|*[!0-9]*) TAIL=200 ;;
             esac
 
+            echo "=== host resources ==="
+            uname -a || true
+            nproc || true
+            free -h || true
+            df -h / /var/lib/docker 2>/dev/null || df -h /
+            echo
+            docker stats --no-stream --format 'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' || true
+
+            echo
             echo "=== compose ps ==="
             docker compose -f compose.vps.yml ps
 
