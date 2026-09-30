@@ -23,17 +23,18 @@ jobs:
             curl -sSI --connect-timeout 10 --max-time 20 \
               'https://feeds.themarfa.name/gimg/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' \
               | head -n 15 || true
-            echo "=== last error lines with gimg ==="
-            grep gimg /var/log/nginx/error.log | tail -n 10 || true
-            echo "=== server blocks overview ==="
-            awk '
-              /^[[:space:]]*server[[:space:]]*\{/ {s=1; n=0; ssl="-"; listen="-"}
-              s && /listen/ {listen=$0}
-              s && /ssl_certificate / {ssl="ssl"}
-              s && /server_name/ {n=$0}
-              s && /ghost-img-proxy:gimg:begin/ {print "HAS_GIMG", ssl, listen, n}
-              s && /^[[:space:]]*location/ { if($0 ~ /gimg|\/ /) print " LOC", $0 }
-              s && /^\}/ {s=0}
-            ' /etc/nginx/sites-enabled/freshrss
-            echo "=== show gimg blocks ==="
-            grep -n "gimg\|server_name\|listen \|location " /etc/nginx/sites-enabled/freshrss | head -n 80
+            echo "=== curl img ==="
+            curl -v --connect-timeout 10 --max-time 20 -o /dev/null \
+              'https://img.themarfa.name/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' 2>&1 | tail -n 40 || true
+            echo "=== curl img -k ==="
+            curl -k -sS -o /dev/null -w 'code=%{http_code} ssl=%{ssl_verify_result}\n' --connect-timeout 10 --max-time 20 \
+              'https://img.themarfa.name/c/71/cf/71cf070c-b8aa-467e-9efd-cf18f7dcf253/content/images/size/w30/2018/01/DSC_0094-3-.jpg' || true
+            echo "=== cert files ==="
+            ls -la /etc/letsencrypt/live/img.themarfa.name/ 2>&1 || true
+            echo "=== nginx img site ==="
+            ls -la /etc/nginx/sites-enabled/img.themarfa.name /etc/nginx/sites-available/img.themarfa.name 2>&1 || true
+            nginx -T 2>/dev/null | awk '/server_name img.themarfa.name/,/^}/' | head -n 80 || true
+            echo "=== openssl s_client ==="
+            echo | openssl s_client -connect img.themarfa.name:443 -servername img.themarfa.name 2>/dev/null | openssl x509 -noout -subject -issuer -dates 2>&1 || true
+            echo "=== resolve ==="
+            getent ahostsv4 img.themarfa.name bot.themarfa.name || true
