@@ -41,9 +41,16 @@ TARGET_URL = os.getenv("TARGET_GHOST_URL", "").rstrip("/")
 TARGET_KEY = os.getenv("TARGET_GHOST_ADMIN_API_KEY", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 MAP_PATH = Path(os.getenv("MAP_FILE", "map.json"))
+AZURE_TRANSLATOR_KEY = os.getenv("AZURE_TRANSLATOR_KEY", "")
+AZURE_TRANSLATOR_REGION = os.getenv("AZURE_TRANSLATOR_REGION", "").strip()
+AZURE_TRANSLATOR_ENDPOINT = os.getenv(
+    "AZURE_TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"
+).rstrip("/")
 
 http = httpx.Client(timeout=60.0)
 _deepl_client: deepl.DeepLClient | None = None
+# Sticky for process lifetime: after DeepL 456, stop retrying until restart
+_deepl_quota_exhausted = False
 
 app = FastAPI()
 
@@ -53,6 +60,10 @@ def _get_deepl() -> deepl.DeepLClient:
     if _deepl_client is None:
         _deepl_client = deepl.DeepLClient(os.environ["DEEPL_API_KEY"])
     return _deepl_client
+
+
+def _azure_configured() -> bool:
+    return bool(AZURE_TRANSLATOR_KEY and AZURE_TRANSLATOR_REGION)
 
 
 def _ghost_token(admin_key: str) -> str:
@@ -196,13 +207,12 @@ def _scrub_and_relocate_cover(post: dict[str, Any]) -> str | None:
     return _ghost_upload_image(TARGET_URL, TARGET_KEY, cleaned, filename, content_type)
 
 
-# ponytail: DeepL request body cap is 128 KiB; stay under with margin for JSON overhead
-_DEEPL_MAX_BYTES = 100 * 1024
+# DeepL body cap 128 KiB; Azure Text API ~50k chars — keep under both with margin
+_DEEPL_MAX_BYTES = 80 * 1024
+_AZURE_MAX_CHARS = 45_000
 
-def _tr(text: str, *, html: bool = False) -> str:
-    text = text.strip()
-    if not text:
-        return text
+
+def _tr_deepl(text: str, *, html: bool = False) -> str:
     kwargs: dict[str, Any] = {
         "source_lang": "RU",
         "target_lang": "EN-US",
@@ -213,6 +223,84 @@ def _tr(text: str, *, html: bool = False) -> str:
         kwargs["tag_handling_version"] = "v2"
         kwargs["split_sentences"] = "nonewlines"
     return _get_deepl().translate_text(text, **kwargs).text
+
+
+def _tr_azure_once(text: str, *, html: bool = False) -> str:
+    params: dict[str, str] = {
+        "api-version": "3.0",
+        "from": "ru",
+        "to": "en",
+    }
+    if html:
+        params["textType"] = "html"
+    headers = {
+        "Ocp-Apim-Subscription-Key": AZURE_TRANSLATOR_KEY,
+        "Ocp-Apim-Subscription-Region": AZURE_TRANSLATOR_REGION,
+        "Content-Type": "application/json; charset=UTF-8",
+    }
+    response = http.post(
+        f"{AZURE_TRANSLATOR_ENDPOINT}/translate",
+        params=params,
+        headers=headers,
+        json=[{"Text": text}],
+    )
+    if response.is_error:
+        log.error(
+            "azure translate → %s %s",
+            response.status_code,
+            response.text[:500],
+        )
+    response.raise_for_status()
+    data = response.json()
+    try:
+        return data[0]["translations"][0]["text"]
+    except (IndexError, KeyError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected Azure Translator response: {data!r}") from exc
+
+
+def _tr_azure(text: str, *, html: bool = False) -> str:
+    if len(text) <= _AZURE_MAX_CHARS:
+        return _tr_azure_once(text, html=html)
+    if not html:
+        parts: list[str] = []
+        start = 0
+        while start < len(text):
+            parts.append(_tr_azure_once(text[start : start + _AZURE_MAX_CHARS], html=False))
+            start += _AZURE_MAX_CHARS
+        return "".join(parts)
+    translated: list[str] = []
+    buf = ""
+    for block in _split_html_blocks(text):
+        candidate = buf + block
+        if buf and len(candidate) > _AZURE_MAX_CHARS:
+            translated.append(_tr_azure_once(buf, html=True))
+            buf = block
+        else:
+            buf = candidate
+    if buf:
+        translated.append(_tr_azure_once(buf, html=True))
+    return "".join(translated)
+
+
+def _tr(text: str, *, html: bool = False) -> str:
+    global _deepl_quota_exhausted
+    text = text.strip()
+    if not text:
+        return text
+
+    if not _deepl_quota_exhausted:
+        try:
+            return _tr_deepl(text, html=html)
+        except deepl.QuotaExceededException:
+            _deepl_quota_exhausted = True
+            log.warning("DeepL quota exceeded; falling back to Azure Translator")
+
+    if not _azure_configured():
+        raise RuntimeError(
+            "DeepL quota exceeded and Azure Translator is not configured "
+            "(AZURE_TRANSLATOR_KEY + AZURE_TRANSLATOR_REGION)"
+        )
+    return _tr_azure(text, html=html)
 
 
 _BLOCK_END = re.compile(
@@ -642,6 +730,8 @@ def status() -> dict[str, bool]:
         "source_configured": bool(SOURCE_URL and SOURCE_KEY),
         "target_configured": bool(TARGET_URL and TARGET_KEY),
         "deepl_configured": bool(os.getenv("DEEPL_API_KEY")),
+        "azure_configured": _azure_configured(),
+        "deepl_quota_exhausted": _deepl_quota_exhausted,
         "webhook_secret_set": bool(WEBHOOK_SECRET),
     }
 
@@ -725,6 +815,7 @@ if __name__ == "__main__":
     assert _clip("x" * 400, 146).endswith("…")
     assert "…" in _clip("alpha beta gamma delta", 12)
     assert len(_clip("a" * 500, _SEO_DESC_MAX)) <= _SEO_DESC_MAX
+    assert _azure_configured() is bool(AZURE_TRANSLATOR_KEY and AZURE_TRANSLATOR_REGION)
     since = datetime.fromisoformat(_reconcile_since().replace("Z", "+00:00"))
     assert timedelta(hours=23, minutes=59) < datetime.now(timezone.utc) - since < timedelta(hours=24, minutes=1)
     assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
