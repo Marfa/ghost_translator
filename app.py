@@ -49,8 +49,9 @@ AZURE_TRANSLATOR_ENDPOINT = os.getenv(
 
 http = httpx.Client(timeout=60.0)
 _deepl_client: deepl.DeepLClient | None = None
-# Sticky for process lifetime: after DeepL 456, stop retrying until restart
-_deepl_quota_exhausted = False
+# After DeepL 456, skip DeepL for a day (Azure fallback), then probe again.
+_DEEPL_QUOTA_STICKY_SEC = 24 * 3600
+_deepl_quota_exhausted_at: float | None = None
 
 app = FastAPI()
 
@@ -64,6 +65,22 @@ def _get_deepl() -> deepl.DeepLClient:
 
 def _azure_configured() -> bool:
     return bool(AZURE_TRANSLATOR_KEY and AZURE_TRANSLATOR_REGION)
+
+
+def _deepl_quota_blocked() -> bool:
+    global _deepl_quota_exhausted_at
+    if _deepl_quota_exhausted_at is None:
+        return False
+    if time.monotonic() - _deepl_quota_exhausted_at >= _DEEPL_QUOTA_STICKY_SEC:
+        _deepl_quota_exhausted_at = None
+        log.info("DeepL quota sticky expired; retrying DeepL")
+        return False
+    return True
+
+
+def _mark_deepl_quota_exhausted() -> None:
+    global _deepl_quota_exhausted_at
+    _deepl_quota_exhausted_at = time.monotonic()
 
 
 def _ghost_token(admin_key: str) -> str:
@@ -283,16 +300,15 @@ def _tr_azure(text: str, *, html: bool = False) -> str:
 
 
 def _tr(text: str, *, html: bool = False) -> str:
-    global _deepl_quota_exhausted
     text = text.strip()
     if not text:
         return text
 
-    if not _deepl_quota_exhausted:
+    if not _deepl_quota_blocked():
         try:
             return _tr_deepl(text, html=html)
         except deepl.QuotaExceededException:
-            _deepl_quota_exhausted = True
+            _mark_deepl_quota_exhausted()
             log.warning("DeepL quota exceeded; falling back to Azure Translator")
 
     if not _azure_configured():
@@ -731,7 +747,7 @@ def status() -> dict[str, bool]:
         "target_configured": bool(TARGET_URL and TARGET_KEY),
         "deepl_configured": bool(os.getenv("DEEPL_API_KEY")),
         "azure_configured": _azure_configured(),
-        "deepl_quota_exhausted": _deepl_quota_exhausted,
+        "deepl_quota_exhausted": _deepl_quota_blocked(),
         "webhook_secret_set": bool(WEBHOOK_SECRET),
     }
 
@@ -816,6 +832,13 @@ if __name__ == "__main__":
     assert "…" in _clip("alpha beta gamma delta", 12)
     assert len(_clip("a" * 500, _SEO_DESC_MAX)) <= _SEO_DESC_MAX
     assert _azure_configured() is bool(AZURE_TRANSLATOR_KEY and AZURE_TRANSLATOR_REGION)
+    _deepl_quota_exhausted_at = None
+    assert _deepl_quota_blocked() is False
+    _mark_deepl_quota_exhausted()
+    assert _deepl_quota_blocked() is True
+    _deepl_quota_exhausted_at = time.monotonic() - _DEEPL_QUOTA_STICKY_SEC - 1
+    assert _deepl_quota_blocked() is False
+    assert _deepl_quota_exhausted_at is None
     since = datetime.fromisoformat(_reconcile_since().replace("Z", "+00:00"))
     assert timedelta(hours=23, minutes=59) < datetime.now(timezone.utc) - since < timedelta(hours=24, minutes=1)
     assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
