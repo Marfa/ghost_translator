@@ -1,0 +1,72 @@
+name: Vendor watermarks-remover
+
+on:
+  schedule:
+    # Mondays 06:00 UTC — Dependabot-style weekly bump for vendored Layer A.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  vendor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Refresh vendor/wm from latest upstream release
+        id: vendor
+        run: |
+          set -euo pipefail
+          before="$(tr -d '[:space:]' < vendor/wm/VERSION || true)"
+          python scripts/vendor_watermarks_remover.py
+          after="$(tr -d '[:space:]' < vendor/wm/VERSION)"
+          echo "before=$before" >> "$GITHUB_OUTPUT"
+          echo "after=$after" >> "$GITHUB_OUTPUT"
+          if git diff --quiet -- vendor/wm; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Self-check app imports
+        if: steps.vendor.outputs.changed == 'true'
+        run: python app.py
+
+      - name: Open or update PR
+        if: steps.vendor.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE: ${{ steps.vendor.outputs.before }}
+          AFTER: ${{ steps.vendor.outputs.after }}
+        run: |
+          set -euo pipefail
+          branch="deps/watermarks-remover-${AFTER}"
+          title="Bump vendored watermarks-remover Layer A to ${AFTER}"
+          body="$(cat <<EOF
+          ## Summary
+          - Auto-refresh \`vendor/wm\` from [guillaumemeyer/watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover) \`${BEFORE:-?}\` → \`${AFTER}\`
+          - Same Layer A extract as \`scripts/vendor_watermarks_remover.py\` (text/HTML/PNG/JPEG only)
+
+          ## Test plan
+          - [x] \`python app.py\` self-asserts in this workflow
+          - [ ] Spot-check sync still strips ZWSP / AI generator meta / PNG tEXt
+          EOF
+          )"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$branch"
+          git add vendor/wm
+          git commit -m "$title"
+          git push -u origin "HEAD:$branch" --force
+          if gh pr view "$branch" --json number >/dev/null 2>&1; then
+            gh pr edit "$branch" --title "$title" --body "$body"
+          else
+            gh pr create --title "$title" --body "$body" --base main --head "$branch"
+          fi
