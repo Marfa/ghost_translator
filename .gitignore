@@ -4,3 +4,4 @@ __pycache__/
 data/
 map.json
 .DS_Store
+scripts/git-http-socks-bridge.py
