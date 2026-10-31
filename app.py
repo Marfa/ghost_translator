@@ -41,15 +41,14 @@ TARGET_URL = os.getenv("TARGET_GHOST_URL", "").rstrip("/")
 TARGET_KEY = os.getenv("TARGET_GHOST_ADMIN_API_KEY", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 MAP_PATH = Path(os.getenv("MAP_FILE", "map.json"))
-AZURE_TRANSLATOR_KEY = os.getenv("AZURE_TRANSLATOR_KEY", "")
-AZURE_TRANSLATOR_REGION = os.getenv("AZURE_TRANSLATOR_REGION", "").strip()
-AZURE_TRANSLATOR_ENDPOINT = os.getenv(
-    "AZURE_TRANSLATOR_ENDPOINT", "https://api.cognitive.microsofttranslator.com"
-).rstrip("/")
+# Fallback when DeepL quota (456) is exhausted — RapidAPI Deep Translate.
+RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "").strip()
+_RAPID_HOST = "deep-translate1.p.rapidapi.com"
+_RAPID_URL = f"https://{_RAPID_HOST}/language/translate/v2"
 
 http = httpx.Client(timeout=60.0)
 _deepl_client: deepl.DeepLClient | None = None
-# After DeepL 456, skip DeepL for a day (Azure fallback), then probe again.
+# After DeepL 456, skip DeepL for a day (RapidAPI fallback), then probe again.
 _DEEPL_QUOTA_STICKY_SEC = 24 * 3600
 _deepl_quota_exhausted_at: float | None = None
 
@@ -63,8 +62,8 @@ def _get_deepl() -> deepl.DeepLClient:
     return _deepl_client
 
 
-def _azure_configured() -> bool:
-    return bool(AZURE_TRANSLATOR_KEY and AZURE_TRANSLATOR_REGION)
+def _rapidapi_configured() -> bool:
+    return bool(RAPIDAPI_KEY)
 
 
 def _deepl_quota_blocked() -> bool:
@@ -224,9 +223,8 @@ def _scrub_and_relocate_cover(post: dict[str, Any]) -> str | None:
     return _ghost_upload_image(TARGET_URL, TARGET_KEY, cleaned, filename, content_type)
 
 
-# DeepL body cap 128 KiB; Azure Text API ~50k chars — keep under both with margin
+# DeepL body cap 128 KiB — keep under with margin (RapidAPI claims no doc length cap)
 _DEEPL_MAX_BYTES = 80 * 1024
-_AZURE_MAX_CHARS = 45_000
 
 
 def _tr_deepl(text: str, *, html: bool = False) -> str:
@@ -242,61 +240,53 @@ def _tr_deepl(text: str, *, html: bool = False) -> str:
     return _get_deepl().translate_text(text, **kwargs).text
 
 
-def _tr_azure_once(text: str, *, html: bool = False) -> str:
-    params: dict[str, str] = {
-        "api-version": "3.0",
-        "from": "ru",
-        "to": "en",
+def _parse_rapid_translation(data: object, fallback: str) -> str:
+    """Accept Deep Translate dict shape and Google-native list shape."""
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected RapidAPI Deep Translate response: {data!r}")
+    translations = (data.get("data") or {}).get("translations")
+    if isinstance(translations, dict):
+        texts = translations.get("translatedText")
+        if isinstance(texts, list) and texts:
+            return str(texts[0] or fallback)
+        if isinstance(texts, str) and texts.strip():
+            return texts
+    if isinstance(translations, list) and translations:
+        first = translations[0] or {}
+        if isinstance(first, dict):
+            return str(first.get("translatedText") or fallback)
+    raise RuntimeError(f"Unexpected RapidAPI Deep Translate response: {data!r}")
+
+
+def _tr_rapidapi(text: str, *, html: bool = False) -> str:
+    payload: dict[str, object] = {
+        "q": text,
+        "source": "ru",
+        "target": "en",
+        "format": "html" if html else "text",
     }
-    if html:
-        params["textType"] = "html"
     headers = {
-        "Ocp-Apim-Subscription-Key": AZURE_TRANSLATOR_KEY,
-        "Ocp-Apim-Subscription-Region": AZURE_TRANSLATOR_REGION,
-        "Content-Type": "application/json; charset=UTF-8",
+        "X-RapidAPI-Key": RAPIDAPI_KEY,
+        "X-RapidAPI-Host": _RAPID_HOST,
+        "Content-Type": "application/json",
     }
-    response = http.post(
-        f"{AZURE_TRANSLATOR_ENDPOINT}/translate",
-        params=params,
-        headers=headers,
-        json=[{"Text": text}],
-    )
+    try:
+        response = http.post(_RAPID_URL, json=payload, headers=headers)
+    except httpx.RequestError as exc:
+        log.error(
+            "rapidapi deep translate → %s %s",
+            type(exc).__name__,
+            str(exc)[:500],
+        )
+        raise
     if response.is_error:
         log.error(
-            "azure translate → %s %s",
+            "rapidapi deep translate → %s %s",
             response.status_code,
             response.text[:500],
         )
     response.raise_for_status()
-    data = response.json()
-    try:
-        return data[0]["translations"][0]["text"]
-    except (IndexError, KeyError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected Azure Translator response: {data!r}") from exc
-
-
-def _tr_azure(text: str, *, html: bool = False) -> str:
-    if len(text) <= _AZURE_MAX_CHARS:
-        return _tr_azure_once(text, html=html)
-    if not html:
-        parts: list[str] = []
-        start = 0
-        while start < len(text):
-            parts.append(_tr_azure_once(text[start : start + _AZURE_MAX_CHARS], html=False))
-            start += _AZURE_MAX_CHARS
-        return "".join(parts)
-    translated: list[str] = []
-    buf = ""
-    for block in _split_html_blocks(text):
-        candidate = buf + block
-        if buf and len(candidate) > _AZURE_MAX_CHARS:
-            translated.append(_tr_azure_once(buf, html=True))
-            buf = block
-        else:
-            buf = candidate
-    if buf:
-        translated.append(_tr_azure_once(buf, html=True))
-    return "".join(translated)
+    return _parse_rapid_translation(response.json(), text)
 
 
 def _tr(text: str, *, html: bool = False) -> str:
@@ -309,14 +299,16 @@ def _tr(text: str, *, html: bool = False) -> str:
             return _tr_deepl(text, html=html)
         except deepl.QuotaExceededException:
             _mark_deepl_quota_exhausted()
-            log.warning("DeepL quota exceeded; falling back to Azure Translator")
+            log.warning(
+                "DeepL quota exceeded; falling back to RapidAPI Deep Translate"
+            )
 
-    if not _azure_configured():
+    if not _rapidapi_configured():
         raise RuntimeError(
-            "DeepL quota exceeded and Azure Translator is not configured "
-            "(AZURE_TRANSLATOR_KEY + AZURE_TRANSLATOR_REGION)"
+            "DeepL quota exceeded and RapidAPI Deep Translate is not configured "
+            "(RAPIDAPI_KEY)"
         )
-    return _tr_azure(text, html=html)
+    return _tr_rapidapi(text, html=html)
 
 
 _BLOCK_END = re.compile(
@@ -746,7 +738,7 @@ def status() -> dict[str, bool]:
         "source_configured": bool(SOURCE_URL and SOURCE_KEY),
         "target_configured": bool(TARGET_URL and TARGET_KEY),
         "deepl_configured": bool(os.getenv("DEEPL_API_KEY")),
-        "azure_configured": _azure_configured(),
+        "rapidapi_configured": _rapidapi_configured(),
         "deepl_quota_exhausted": _deepl_quota_blocked(),
         "webhook_secret_set": bool(WEBHOOK_SECRET),
     }
@@ -831,7 +823,13 @@ if __name__ == "__main__":
     assert _clip("x" * 400, 146).endswith("…")
     assert "…" in _clip("alpha beta gamma delta", 12)
     assert len(_clip("a" * 500, _SEO_DESC_MAX)) <= _SEO_DESC_MAX
-    assert _azure_configured() is bool(AZURE_TRANSLATOR_KEY and AZURE_TRANSLATOR_REGION)
+    assert _rapidapi_configured() is bool(RAPIDAPI_KEY)
+    assert _parse_rapid_translation(
+        {"data": {"translations": {"translatedText": ["hi"]}}}, "fb"
+    ) == "hi"
+    assert _parse_rapid_translation(
+        {"data": {"translations": [{"translatedText": "hola"}]}}, "fb"
+    ) == "hola"
     _deepl_quota_exhausted_at = None
     assert _deepl_quota_blocked() is False
     _mark_deepl_quota_exhausted()

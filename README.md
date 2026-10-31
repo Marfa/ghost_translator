@@ -21,7 +21,7 @@ Docker: `mkdir -p data && docker compose up -d --build`
 | Автоперевод | Webhook `post.published` на `/webhook/ghost` |
 | Пропущенный пост | `POST /sync/{id}` с заголовком `X-Sync-Secret` |
 | Автосверка | `POST /reconcile` — посты за последние 24 ч, без map |
-| Движок | DeepL по умолчанию; при квоте (456) — Azure Translator F0 |
+| Движок | DeepL по умолчанию; при квоте (456) — RapidAPI Deep Translate |
 | Длинные статьи | HTML режется на части (лимит запроса) |
 | AI-пометки | Layer A: невидимый Unicode + AI meta в HTML до перевода ([watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover)) |
 | Обложка | Скачать → снять C2PA → при грязной метке заменить на RU (`feature`/`og`/`twitter` + HTML) → залить на EN |
@@ -87,9 +87,7 @@ curl -X POST "https://ВАШ-ХОСТ/reconcile" \
 | `TARGET_GHOST_URL` | URL целевого (EN) сайта |
 | `TARGET_GHOST_ADMIN_API_KEY` | Admin API key цели |
 | `DEEPL_API_KEY` | Перевод RU→EN (основной) |
-| `AZURE_TRANSLATOR_KEY` | Fallback при исчерпании квоты DeepL |
-| `AZURE_TRANSLATOR_REGION` | Регион ресурса (`northeurope`, `eastus`, …) |
-| `AZURE_TRANSLATOR_ENDPOINT` | Опционально; по умолчанию global Translator API |
+| `RAPIDAPI_KEY` | Fallback при исчерпании квоты DeepL (HTTP 456) — RapidAPI Deep Translate |
 | `WEBHOOK_SECRET` | Подпись webhook и `X-Sync-Secret` |
 | `MAP_FILE` | Маппинг source→target id (по умолчанию `map.json`) |
 

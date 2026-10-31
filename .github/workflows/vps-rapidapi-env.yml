@@ -1,4 +1,4 @@
-name: Update VPS Azure env
+name: Update VPS RapidAPI env
 
 on:
   workflow_dispatch:
@@ -7,38 +7,36 @@ permissions:
   contents: read
 
 concurrency:
-  group: vps-azure-env
+  group: vps-rapidapi-env
   cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
     steps:
-      - name: Upsert Azure Translator keys on VPS and restart
+      - name: Upsert RapidAPI key on VPS and restart
         uses: appleboy/ssh-action@v1.2.5
         env:
-          AZURE_TRANSLATOR_KEY: ${{ secrets.AZURE_TRANSLATOR_KEY }}
-          AZURE_TRANSLATOR_REGION: ${{ secrets.AZURE_TRANSLATOR_REGION }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
         with:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
           port: 22
           command_timeout: 10m
-          envs: AZURE_TRANSLATOR_KEY,AZURE_TRANSLATOR_REGION
+          envs: RAPIDAPI_KEY
           script: |
             set -euo pipefail
             cd /opt/ghost-translator
 
-            if [[ -z "${AZURE_TRANSLATOR_KEY:-}" || -z "${AZURE_TRANSLATOR_REGION:-}" ]]; then
-              echo "ERROR: AZURE_TRANSLATOR_KEY/REGION secrets are empty" >&2
+            if [[ -z "${RAPIDAPI_KEY:-}" ]]; then
+              echo "ERROR: RAPIDAPI_KEY secret is empty" >&2
               exit 1
             fi
 
             tmp="$(mktemp)"
-            grep -vE '^(AZURE_TRANSLATOR_KEY|AZURE_TRANSLATOR_REGION|AZURE_TRANSLATOR_ENDPOINT)=' .env > "$tmp" || true
-            printf '%s\n' "AZURE_TRANSLATOR_KEY=${AZURE_TRANSLATOR_KEY}" >> "$tmp"
-            printf '%s\n' "AZURE_TRANSLATOR_REGION=${AZURE_TRANSLATOR_REGION}" >> "$tmp"
+            grep -vE '^(RAPIDAPI_KEY|AZURE_TRANSLATOR_KEY|AZURE_TRANSLATOR_REGION|AZURE_TRANSLATOR_ENDPOINT)=' .env > "$tmp" || true
+            printf '%s\n' "RAPIDAPI_KEY=${RAPIDAPI_KEY}" >> "$tmp"
             mv "$tmp" .env
             chmod 600 .env
 
