@@ -48,9 +48,8 @@ _RAPID_URL = f"https://{_RAPID_HOST}/language/translate/v2"
 
 http = httpx.Client(timeout=60.0)
 _deepl_client: deepl.DeepLClient | None = None
-# After DeepL 456, skip DeepL for a day (RapidAPI fallback), then probe again.
-_DEEPL_QUOTA_STICKY_SEC = 24 * 3600
-_deepl_quota_exhausted_at: float | None = None
+# After DeepL 456, stay on RapidAPI until process restart (new key / deploy).
+_deepl_quota_exhausted = False
 
 app = FastAPI()
 
@@ -67,19 +66,12 @@ def _rapidapi_configured() -> bool:
 
 
 def _deepl_quota_blocked() -> bool:
-    global _deepl_quota_exhausted_at
-    if _deepl_quota_exhausted_at is None:
-        return False
-    if time.monotonic() - _deepl_quota_exhausted_at >= _DEEPL_QUOTA_STICKY_SEC:
-        _deepl_quota_exhausted_at = None
-        log.info("DeepL quota sticky expired; retrying DeepL")
-        return False
-    return True
+    return _deepl_quota_exhausted
 
 
 def _mark_deepl_quota_exhausted() -> None:
-    global _deepl_quota_exhausted_at
-    _deepl_quota_exhausted_at = time.monotonic()
+    global _deepl_quota_exhausted
+    _deepl_quota_exhausted = True
 
 
 def _ghost_token(admin_key: str) -> str:
@@ -830,13 +822,10 @@ if __name__ == "__main__":
     assert _parse_rapid_translation(
         {"data": {"translations": [{"translatedText": "hola"}]}}, "fb"
     ) == "hola"
-    _deepl_quota_exhausted_at = None
+    _deepl_quota_exhausted = False
     assert _deepl_quota_blocked() is False
     _mark_deepl_quota_exhausted()
     assert _deepl_quota_blocked() is True
-    _deepl_quota_exhausted_at = time.monotonic() - _DEEPL_QUOTA_STICKY_SEC - 1
-    assert _deepl_quota_blocked() is False
-    assert _deepl_quota_exhausted_at is None
     since = datetime.fromisoformat(_reconcile_since().replace("Z", "+00:00"))
     assert timedelta(hours=23, minutes=59) < datetime.now(timezone.utc) - since < timedelta(hours=24, minutes=1)
     assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
