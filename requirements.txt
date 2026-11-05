@@ -10,5 +10,5 @@ click>=8.5.0
 requests>=2.34.2
 urllib3>=2.8.0
 # transitive CVE floors (httpx/requests → certifi; fastapi → otel-api)
-certifi>=2026.10.18
+certifi>=2026.10.23
 opentelemetry-api>=1.45.1
