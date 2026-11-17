@@ -262,15 +262,31 @@ def _tr_rapidapi(text: str, *, html: bool = False) -> str:
         "X-RapidAPI-Host": _RAPID_HOST,
         "Content-Type": "application/json",
     }
-    try:
-        response = http.post(_RAPID_URL, json=payload, headers=headers)
-    except httpx.RequestError as exc:
-        log.error(
-            "rapidapi deep translate → %s %s",
-            type(exc).__name__,
-            str(exc)[:500],
-        )
-        raise
+    # Free/low tiers often 429; back off before failing the whole sync.
+    delays = (0, 2, 5, 10, 20, 40)
+    response: httpx.Response | None = None
+    for attempt, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            response = http.post(_RAPID_URL, json=payload, headers=headers)
+        except httpx.RequestError as exc:
+            log.error(
+                "rapidapi deep translate → %s %s",
+                type(exc).__name__,
+                str(exc)[:500],
+            )
+            raise
+        if response.status_code == 429 and attempt < len(delays) - 1:
+            log.warning(
+                "rapidapi deep translate 429; retry %s/%s after %ss",
+                attempt + 1,
+                len(delays) - 1,
+                delays[attempt + 1],
+            )
+            continue
+        break
+    assert response is not None
     if response.is_error:
         log.error(
             "rapidapi deep translate → %s %s",
@@ -842,7 +858,11 @@ async def manual_sync_url(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     log.info("manual sync-url %s → %s", ref, post_id)
-    result = sync_post(post_id, allow_draft=True)
+    try:
+        result = sync_post(post_id, allow_draft=True)
+    except Exception as exc:
+        log.exception("manual sync-url failed %s", post_id)
+        raise HTTPException(status_code=502, detail=str(exc)[:400]) from exc
     return {"ok": True, "source_post_id": post_id, "ref": ref, **result}
 
 
