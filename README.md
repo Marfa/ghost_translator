@@ -20,6 +20,7 @@ Docker: `mkdir -p data && docker compose up -d --build`
 |-----|-----|
 | Автоперевод | Webhook `post.published` на `/webhook/ghost` |
 | Пропущенный пост | `POST /sync/{id}` с заголовком `X-Sync-Secret` |
+| По ссылке | `POST /sync-url` с JSON `{"url":"…"}` (в т.ч. draft) |
 | Автосверка | `POST /reconcile` — посты за последние 24 ч, без map |
 | Движок | DeepL по умолчанию; при квоте (456) — постоянный fallback на RapidAPI до рестарта |
 | Длинные статьи | HTML режется на части (лимит запроса) |
@@ -66,6 +67,19 @@ curl -X POST "https://ВАШ-ХОСТ/sync/POST_ID" \
 ```
 
 `POST_ID` — id поста в URL редактора Ghost.
+
+### По ссылке (в т.ч. черновик)
+
+```bash
+curl -X POST "https://ВАШ-ХОСТ/sync-url" \
+  -H "X-Sync-Secret: ВАШ_WEBHOOK_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://blog.example/slug-posta/"}'
+```
+
+Принимает публичный URL, превью `/p/{uuid}/`, slug или id. Ответ синхронный (дождаться перевода).
+
+**GitHub Actions** (`.github/workflows/sync-post.yml`): Actions → Sync post by URL → Run workflow → вставить ссылку. Secrets те же, что у reconcile: `RECONCILE_URL`, `WEBHOOK_SECRET`.
 
 ### Автосверка (вместо UptimeRobot)
 
@@ -118,7 +132,7 @@ cp .env.example .env   # заполнить секреты
 
 Webhook / reconcile:
 
-`https://ghost-translator.themarfa.name/webhook/ghost` и `…/reconcile`.
+`https://ghost-translator.themarfa.name/webhook/ghost`, `…/reconcile`, `…/sync-url`.
 
 ### Локально / Oracle Cloud Always Free
 

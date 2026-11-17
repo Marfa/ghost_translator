@@ -559,7 +559,50 @@ def _preserve_target_state(payload: dict[str, Any], target_post: dict[str, Any])
     return payload
 
 
-def sync_post(source_id: str) -> dict[str, Any]:
+def _parse_post_ref(ref: str) -> tuple[str, str]:
+    """Разбор ссылки/id/slug → ('id'|'uuid'|'slug', value)."""
+    raw = (ref or "").strip()
+    if not raw:
+        raise ValueError("empty post ref")
+
+    if re.fullmatch(r"[0-9a-f]{24}", raw, flags=re.IGNORECASE):
+        return "id", raw.lower()
+
+    uuid_re = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    if re.fullmatch(uuid_re, raw, flags=re.IGNORECASE):
+        return "uuid", raw.lower()
+
+    path = raw
+    if "://" in raw or raw.startswith("/"):
+        path = urlparse(raw).path or ""
+    parts = [p for p in path.strip("/").split("/") if p]
+    if len(parts) >= 2 and parts[0].lower() == "p" and re.fullmatch(uuid_re, parts[1], flags=re.IGNORECASE):
+        return "uuid", parts[1].lower()
+    if parts:
+        slug = unquote(parts[-1]).strip()
+        if slug:
+            return "slug", slug
+    raise ValueError(f"cannot parse post ref: {ref!r}")
+
+
+def _resolve_source_ref(ref: str) -> str:
+    kind, value = _parse_post_ref(ref)
+    if kind == "id":
+        return value
+    filt = f"uuid:{value}" if kind == "uuid" else f"slug:{value}"
+    posts = _ghost(
+        SOURCE_URL,
+        SOURCE_KEY,
+        "GET",
+        "posts/",
+        params={"filter": filt, "fields": "id,slug,uuid,status", "limit": 1},
+    )["posts"]
+    if not posts:
+        raise HTTPException(status_code=404, detail=f"Source post not found ({kind}={value})")
+    return posts[0]["id"]
+
+
+def sync_post(source_id: str, *, allow_draft: bool = False) -> dict[str, Any]:
     for name, value in {
         "SOURCE_GHOST_URL": SOURCE_URL,
         "TARGET_GHOST_URL": TARGET_URL,
@@ -578,8 +621,9 @@ def sync_post(source_id: str) -> dict[str, Any]:
         params={"formats": "html"},
     )["posts"][0]
 
-    if post.get("status") != "published":
-        return {"skipped": True, "reason": "not published"}
+    status = post.get("status")
+    if status != "published" and not (allow_draft and status == "draft"):
+        return {"skipped": True, "reason": "not published", "status": status}
 
     post = _strip_source_watermarks(post)
     draft = _build_draft(post)
@@ -769,8 +813,37 @@ def manual_sync(
     """Повторная синхронизация, если webhook не дошёл (например, сервис спал)."""
     _require_sync_secret(x_sync_secret)
     log.info("manual sync queued %s", post_id)
-    background.add_task(_run_sync, post_id)
+    background.add_task(_run_sync, post_id, True)
     return {"ok": True, "queued": True, "source_post_id": post_id}
+
+
+@app.post("/sync-url")
+async def manual_sync_url(
+    request: Request,
+    x_sync_secret: Optional[str] = Header(default=None),
+    url: Optional[str] = None,
+) -> dict[str, Any]:
+    """Ручной перевод по публичной ссылке, uuid-превью или slug (в т.ч. draft)."""
+    _require_sync_secret(x_sync_secret)
+    ref = (url or "").strip()
+    if not ref:
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            ref = str(payload.get("url") or payload.get("post_url") or "").strip()
+    if not ref:
+        raise HTTPException(status_code=400, detail="url required")
+
+    try:
+        post_id = _resolve_source_ref(ref)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    log.info("manual sync-url %s → %s", ref, post_id)
+    result = sync_post(post_id, allow_draft=True)
+    return {"ok": True, "source_post_id": post_id, "ref": ref, **result}
 
 
 @app.post("/reconcile")
@@ -785,9 +858,9 @@ def reconcile_endpoint(
     return {"ok": True, "queued": True, "since": _reconcile_since()}
 
 
-def _run_sync(post_id: str) -> None:
+def _run_sync(post_id: str, allow_draft: bool = False) -> None:
     try:
-        result = sync_post(post_id)
+        result = sync_post(post_id, allow_draft=allow_draft)
         log.info("sync %s done: %s", post_id, result)
     except Exception:
         log.exception("sync %s failed", post_id)
@@ -816,6 +889,17 @@ if __name__ == "__main__":
     assert "…" in _clip("alpha beta gamma delta", 12)
     assert len(_clip("a" * 500, _SEO_DESC_MAX)) <= _SEO_DESC_MAX
     assert _rapidapi_configured() is bool(RAPIDAPI_KEY)
+    assert _parse_post_ref("6afc09ad164e0e0001943911") == ("id", "6afc09ad164e0e0001943911")
+    assert _parse_post_ref(
+        "https://blog.themarfa.name/nakrutka-laikov-v-tvittere-na-zelenka-work/"
+    ) == ("slug", "nakrutka-laikov-v-tvittere-na-zelenka-work")
+    assert _parse_post_ref(
+        "https://blog.themarfa.name/p/d4f5107f-3864-4a32-b401-edbe9c6ab477/"
+    ) == ("uuid", "d4f5107f-3864-4a32-b401-edbe9c6ab477")
+    assert _parse_post_ref("nakrutka-laikov-v-tvittere-na-zelenka-work") == (
+        "slug",
+        "nakrutka-laikov-v-tvittere-na-zelenka-work",
+    )
     assert _parse_rapid_translation(
         {"data": {"translations": {"translatedText": ["hi"]}}}, "fb"
     ) == "hi"
