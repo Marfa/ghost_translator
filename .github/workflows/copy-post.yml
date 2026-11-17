@@ -1,0 +1,40 @@
+name: Copy post by URL (no translate)
+
+on:
+  workflow_dispatch:
+    inputs:
+      post_url:
+        description: "Ссылка на пост (публичный URL, /p/uuid/, slug или id)"
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /copy-url
+        env:
+          POST_URL: ${{ inputs.post_url }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          RECONCILE_URL: ${{ secrets.RECONCILE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RECONCILE_URL:-}" ] || [ -z "${WEBHOOK_SECRET:-}" ]; then
+            echo "Need secrets RECONCILE_URL and WEBHOOK_SECRET" >&2
+            exit 1
+          fi
+          if [ -z "${POST_URL:-}" ]; then
+            echo "post_url is required" >&2
+            exit 1
+          fi
+          BASE="${RECONCILE_URL%/reconcile}"
+          BASE="${BASE%/}"
+          ENDPOINT="${BASE}/copy-url"
+          echo "Calling ${ENDPOINT}"
+          curl -sfS --max-time 600 -X POST "${ENDPOINT}" \
+            -H "X-Sync-Secret: ${WEBHOOK_SECRET}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n --arg url "$POST_URL" '{url:$url}')"
+          echo

@@ -25,6 +25,12 @@ git reset --hard "origin/$BRANCH"
 cp -a /tmp/ghost-translator.env.bak .env
 rm -f /tmp/ghost-translator.env.bak
 
+# Drop removed translator fallbacks (RapidAPI / Azure) if still present
+tmp="$(mktemp)"
+grep -vE '^(RAPIDAPI_KEY|AZURE_TRANSLATOR_KEY|AZURE_TRANSLATOR_REGION|AZURE_TRANSLATOR_ENDPOINT)=' .env > "$tmp" || true
+mv "$tmp" .env
+chmod 600 .env
+
 docker compose -f "$COMPOSE_FILE" up -d --build --remove-orphans
 
 for _ in $(seq 1 30); do

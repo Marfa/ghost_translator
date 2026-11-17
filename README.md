@@ -21,8 +21,9 @@ Docker: `mkdir -p data && docker compose up -d --build`
 | Автоперевод | Webhook `post.published` на `/webhook/ghost` |
 | Пропущенный пост | `POST /sync/{id}` с заголовком `X-Sync-Secret` |
 | По ссылке | `POST /sync-url` с JSON `{"url":"…"}` (в т.ч. draft) |
+| Копия без перевода | `POST /copy-url` — те же поля RU→EN draft, без DeepL |
 | Автосверка | `POST /reconcile` — посты за последние 24 ч, без map |
-| Движок | DeepL по умолчанию; при квоте (456) — постоянный fallback на RapidAPI до рестарта |
+| Движок | DeepL |
 | Длинные статьи | HTML режется на части (лимит запроса) |
 | AI-пометки | Layer A: невидимый Unicode + AI meta в HTML до перевода ([watermarks-remover](https://github.com/guillaumemeyer/watermarks-remover)) |
 | Обложка | Скачать → снять C2PA → при грязной метке заменить на RU (`feature`/`og`/`twitter` + HTML) → залить на EN |
@@ -81,6 +82,19 @@ curl -X POST "https://ВАШ-ХОСТ/sync-url" \
 
 **GitHub Actions** (`.github/workflows/sync-post.yml`): Actions → Sync post by URL → Run workflow → вставить ссылку. Secrets те же, что у reconcile: `RECONCILE_URL`, `WEBHOOK_SECRET`.
 
+### Копия без перевода
+
+```bash
+curl -X POST "https://ВАШ-ХОСТ/copy-url" \
+  -H "X-Sync-Secret: ВАШ_WEBHOOK_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://blog.example/slug-posta/"}'
+```
+
+Тот же разбор ссылки, что у `/sync-url`, но текст/slug/SEO копируются как есть (watermark scrub и обложка — да).
+
+**GitHub Actions** (`.github/workflows/copy-post.yml`): Actions → Copy post by URL (no translate) → Run workflow.
+
 ### Автосверка (вместо UptimeRobot)
 
 ```bash
@@ -100,8 +114,7 @@ curl -X POST "https://ВАШ-ХОСТ/reconcile" \
 | `SOURCE_GHOST_ADMIN_API_KEY` | Admin API key источника |
 | `TARGET_GHOST_URL` | URL целевого (EN) сайта |
 | `TARGET_GHOST_ADMIN_API_KEY` | Admin API key цели |
-| `DEEPL_API_KEY` | Перевод RU→EN (основной) |
-| `RAPIDAPI_KEY` | Постоянный fallback при квоте DeepL (HTTP 456) — RapidAPI Deep Translate; сброс — рестарт |
+| `DEEPL_API_KEY` | Перевод RU→EN |
 | `WEBHOOK_SECRET` | Подпись webhook и `X-Sync-Secret` |
 | `MAP_FILE` | Маппинг source→target id (по умолчанию `map.json`) |
 
@@ -132,7 +145,7 @@ cp .env.example .env   # заполнить секреты
 
 Webhook / reconcile:
 
-`https://ghost-translator.themarfa.name/webhook/ghost`, `…/reconcile`, `…/sync-url`.
+`https://ghost-translator.themarfa.name/webhook/ghost`, `…/reconcile`, `…/sync-url`, `…/copy-url`.
 
 ### Локально / Oracle Cloud Always Free
 

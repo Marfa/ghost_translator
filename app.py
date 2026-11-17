@@ -41,15 +41,9 @@ TARGET_URL = os.getenv("TARGET_GHOST_URL", "").rstrip("/")
 TARGET_KEY = os.getenv("TARGET_GHOST_ADMIN_API_KEY", "")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 MAP_PATH = Path(os.getenv("MAP_FILE", "map.json"))
-# Fallback when DeepL quota (456) is exhausted — RapidAPI Deep Translate.
-RAPIDAPI_KEY = os.getenv("RAPIDAPI_KEY", "").strip()
-_RAPID_HOST = "deep-translate1.p.rapidapi.com"
-_RAPID_URL = f"https://{_RAPID_HOST}/language/translate/v2"
 
 http = httpx.Client(timeout=60.0)
 _deepl_client: deepl.DeepLClient | None = None
-# After DeepL 456, stay on RapidAPI until process restart (new key / deploy).
-_deepl_quota_exhausted = False
 
 app = FastAPI()
 
@@ -59,19 +53,6 @@ def _get_deepl() -> deepl.DeepLClient:
     if _deepl_client is None:
         _deepl_client = deepl.DeepLClient(os.environ["DEEPL_API_KEY"])
     return _deepl_client
-
-
-def _rapidapi_configured() -> bool:
-    return bool(RAPIDAPI_KEY)
-
-
-def _deepl_quota_blocked() -> bool:
-    return _deepl_quota_exhausted
-
-
-def _mark_deepl_quota_exhausted() -> None:
-    global _deepl_quota_exhausted
-    _deepl_quota_exhausted = True
 
 
 def _ghost_token(admin_key: str) -> str:
@@ -215,11 +196,14 @@ def _scrub_and_relocate_cover(post: dict[str, Any]) -> str | None:
     return _ghost_upload_image(TARGET_URL, TARGET_KEY, cleaned, filename, content_type)
 
 
-# DeepL body cap 128 KiB — keep under with margin (RapidAPI claims no doc length cap)
+# DeepL body cap 128 KiB — keep under with margin
 _DEEPL_MAX_BYTES = 80 * 1024
 
 
-def _tr_deepl(text: str, *, html: bool = False) -> str:
+def _tr(text: str, *, html: bool = False) -> str:
+    text = text.strip()
+    if not text:
+        return text
     kwargs: dict[str, Any] = {
         "source_lang": "RU",
         "target_lang": "EN-US",
@@ -230,93 +214,6 @@ def _tr_deepl(text: str, *, html: bool = False) -> str:
         kwargs["tag_handling_version"] = "v2"
         kwargs["split_sentences"] = "nonewlines"
     return _get_deepl().translate_text(text, **kwargs).text
-
-
-def _parse_rapid_translation(data: object, fallback: str) -> str:
-    """Accept Deep Translate dict shape and Google-native list shape."""
-    if not isinstance(data, dict):
-        raise RuntimeError(f"Unexpected RapidAPI Deep Translate response: {data!r}")
-    translations = (data.get("data") or {}).get("translations")
-    if isinstance(translations, dict):
-        texts = translations.get("translatedText")
-        if isinstance(texts, list) and texts:
-            return str(texts[0] or fallback)
-        if isinstance(texts, str) and texts.strip():
-            return texts
-    if isinstance(translations, list) and translations:
-        first = translations[0] or {}
-        if isinstance(first, dict):
-            return str(first.get("translatedText") or fallback)
-    raise RuntimeError(f"Unexpected RapidAPI Deep Translate response: {data!r}")
-
-
-def _tr_rapidapi(text: str, *, html: bool = False) -> str:
-    payload: dict[str, object] = {
-        "q": text,
-        "source": "ru",
-        "target": "en",
-        "format": "html" if html else "text",
-    }
-    headers = {
-        "X-RapidAPI-Key": RAPIDAPI_KEY,
-        "X-RapidAPI-Host": _RAPID_HOST,
-        "Content-Type": "application/json",
-    }
-    # Free/low tiers often 429; back off before failing the whole sync.
-    delays = (0, 2, 5, 10, 20, 40)
-    response: httpx.Response | None = None
-    for attempt, delay in enumerate(delays):
-        if delay:
-            time.sleep(delay)
-        try:
-            response = http.post(_RAPID_URL, json=payload, headers=headers)
-        except httpx.RequestError as exc:
-            log.error(
-                "rapidapi deep translate → %s %s",
-                type(exc).__name__,
-                str(exc)[:500],
-            )
-            raise
-        if response.status_code == 429 and attempt < len(delays) - 1:
-            log.warning(
-                "rapidapi deep translate 429; retry %s/%s after %ss",
-                attempt + 1,
-                len(delays) - 1,
-                delays[attempt + 1],
-            )
-            continue
-        break
-    assert response is not None
-    if response.is_error:
-        log.error(
-            "rapidapi deep translate → %s %s",
-            response.status_code,
-            response.text[:500],
-        )
-    response.raise_for_status()
-    return _parse_rapid_translation(response.json(), text)
-
-
-def _tr(text: str, *, html: bool = False) -> str:
-    text = text.strip()
-    if not text:
-        return text
-
-    if not _deepl_quota_blocked():
-        try:
-            return _tr_deepl(text, html=html)
-        except deepl.QuotaExceededException:
-            _mark_deepl_quota_exhausted()
-            log.warning(
-                "DeepL quota exceeded; falling back to RapidAPI Deep Translate"
-            )
-
-    if not _rapidapi_configured():
-        raise RuntimeError(
-            "DeepL quota exceeded and RapidAPI Deep Translate is not configured "
-            "(RAPIDAPI_KEY)"
-        )
-    return _tr_rapidapi(text, html=html)
 
 
 _BLOCK_END = re.compile(
@@ -504,32 +401,51 @@ def _clip(text: str, limit: int) -> str:
     return cut.rstrip(".,;:!-—") + "…"
 
 
-def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
-    title = _clip(_tr(post.get("title", "")), _GHOST_MAX["title"])
+def _field(text: str, *, translate: bool) -> str:
+    return _tr(text) if translate else text
+
+
+def _build_draft(post: dict[str, Any], *, translate: bool = True) -> dict[str, Any]:
+    title_src = post.get("title", "") or ""
+    title = _clip(_field(title_src, translate=translate), _GHOST_MAX["title"])
+    html_src = _strip_tag_links(post.get("html") or "<p></p>")
+    if translate:
+        slug = _slug(title_src)
+        html = _tr_html(html_src)
+    else:
+        slug = (post.get("slug") or "post")[:240]
+        html = html_src
+
     draft: dict[str, Any] = {
         "title": title,
-        "slug": _slug(post.get("title", "post")),
+        "slug": slug,
         "status": "draft",
-        "html": _tr_html(_strip_tag_links(post.get("html") or "<p></p>")),
+        "html": html,
         "tags": [],
     }
 
     excerpt = post.get("custom_excerpt") or post.get("excerpt")
     if excerpt:
-        draft["custom_excerpt"] = _clip(_tr(excerpt), _SEO_DESC_MAX)
+        draft["custom_excerpt"] = _clip(_field(excerpt, translate=translate), _SEO_DESC_MAX)
 
     meta_title_src = post.get("meta_title") or post.get("og_title")
     if meta_title_src:
-        draft["meta_title"] = _clip(_tr(meta_title_src), _GHOST_MAX["meta_title"])
+        draft["meta_title"] = _clip(
+            _field(meta_title_src, translate=translate), _GHOST_MAX["meta_title"]
+        )
 
     meta_desc_src = post.get("meta_description") or post.get("og_description")
     if meta_desc_src:
-        draft["meta_description"] = _clip(_tr(meta_desc_src), _SEO_DESC_MAX)
+        draft["meta_description"] = _clip(
+            _field(meta_desc_src, translate=translate), _SEO_DESC_MAX
+        )
 
     # Facebook card = og_*; Ghost often leaves these null when UI reuses excerpt/meta
     og_title_src = post.get("og_title") or post.get("meta_title") or post.get("title")
     if og_title_src:
-        draft["og_title"] = _clip(_tr(og_title_src), _GHOST_MAX["og_title"])
+        draft["og_title"] = _clip(
+            _field(og_title_src, translate=translate), _GHOST_MAX["og_title"]
+        )
 
     og_desc_src = (
         post.get("og_description")
@@ -538,11 +454,17 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
         or post.get("excerpt")
     )
     if og_desc_src:
-        draft["og_description"] = _clip(_tr(og_desc_src), _SEO_DESC_MAX)
+        draft["og_description"] = _clip(
+            _field(og_desc_src, translate=translate), _SEO_DESC_MAX
+        )
 
-    twitter_title_src = post.get("twitter_title") or post.get("og_title") or post.get("meta_title") or post.get("title")
+    twitter_title_src = (
+        post.get("twitter_title") or post.get("og_title") or post.get("meta_title") or post.get("title")
+    )
     if twitter_title_src:
-        draft["twitter_title"] = _clip(_tr(twitter_title_src), _GHOST_MAX["twitter_title"])
+        draft["twitter_title"] = _clip(
+            _field(twitter_title_src, translate=translate), _GHOST_MAX["twitter_title"]
+        )
 
     twitter_desc_src = (
         post.get("twitter_description")
@@ -552,7 +474,9 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
         or post.get("excerpt")
     )
     if twitter_desc_src:
-        draft["twitter_description"] = _clip(_tr(twitter_desc_src), _SEO_DESC_MAX)
+        draft["twitter_description"] = _clip(
+            _field(twitter_desc_src, translate=translate), _SEO_DESC_MAX
+        )
 
     if post.get("feature_image"):
         cover = _scrub_and_relocate_cover(post)
@@ -562,7 +486,8 @@ def _build_draft(post: dict[str, Any]) -> dict[str, Any]:
             draft["twitter_image"] = cover
     if post.get("feature_image_alt"):
         draft["feature_image_alt"] = _clip(
-            _tr(post["feature_image_alt"]), _GHOST_MAX["feature_image_alt"]
+            _field(post["feature_image_alt"], translate=translate),
+            _GHOST_MAX["feature_image_alt"],
         )
 
     return draft
@@ -618,14 +543,21 @@ def _resolve_source_ref(ref: str) -> str:
     return posts[0]["id"]
 
 
-def sync_post(source_id: str, *, allow_draft: bool = False) -> dict[str, Any]:
-    for name, value in {
+def sync_post(
+    source_id: str,
+    *,
+    allow_draft: bool = False,
+    translate: bool = True,
+) -> dict[str, Any]:
+    required: dict[str, Any] = {
         "SOURCE_GHOST_URL": SOURCE_URL,
         "TARGET_GHOST_URL": TARGET_URL,
         "SOURCE_GHOST_ADMIN_API_KEY": SOURCE_KEY,
         "TARGET_GHOST_ADMIN_API_KEY": TARGET_KEY,
-        "DEEPL_API_KEY": os.getenv("DEEPL_API_KEY"),
-    }.items():
+    }
+    if translate:
+        required["DEEPL_API_KEY"] = os.getenv("DEEPL_API_KEY")
+    for name, value in required.items():
         if not value:
             raise RuntimeError(f"Missing {name}")
 
@@ -642,7 +574,7 @@ def sync_post(source_id: str, *, allow_draft: bool = False) -> dict[str, Any]:
         return {"skipped": True, "reason": "not published", "status": status}
 
     post = _strip_source_watermarks(post)
-    draft = _build_draft(post)
+    draft = _build_draft(post, translate=translate)
     mapping = _load_map()
     target_id = mapping.get(source_id)
 
@@ -674,7 +606,12 @@ def sync_post(source_id: str, *, allow_draft: bool = False) -> dict[str, Any]:
             params={"source": "html"},
             json={"posts": [_preserve_target_state(draft, target_post)]},
         )["posts"][0]
-        return {"action": "updated", "target_post_id": saved["id"], "slug": saved.get("slug")}
+        return {
+            "action": "updated",
+            "target_post_id": saved["id"],
+            "slug": saved.get("slug"),
+            "translated": translate,
+        }
 
     saved = _ghost(
         TARGET_URL,
@@ -686,7 +623,12 @@ def sync_post(source_id: str, *, allow_draft: bool = False) -> dict[str, Any]:
     )["posts"][0]
     mapping[source_id] = saved["id"]
     _save_map(mapping)
-    return {"action": "created", "target_post_id": saved["id"], "slug": saved.get("slug")}
+    return {
+        "action": "created",
+        "target_post_id": saved["id"],
+        "slug": saved.get("slug"),
+        "translated": translate,
+    }
 
 
 def _parse_since(raw: str) -> str:
@@ -790,8 +732,6 @@ def status() -> dict[str, bool]:
         "source_configured": bool(SOURCE_URL and SOURCE_KEY),
         "target_configured": bool(TARGET_URL and TARGET_KEY),
         "deepl_configured": bool(os.getenv("DEEPL_API_KEY")),
-        "rapidapi_configured": _rapidapi_configured(),
-        "deepl_quota_exhausted": _deepl_quota_blocked(),
         "webhook_secret_set": bool(WEBHOOK_SECRET),
     }
 
@@ -833,14 +773,7 @@ def manual_sync(
     return {"ok": True, "queued": True, "source_post_id": post_id}
 
 
-@app.post("/sync-url")
-async def manual_sync_url(
-    request: Request,
-    x_sync_secret: Optional[str] = Header(default=None),
-    url: Optional[str] = None,
-) -> dict[str, Any]:
-    """Ручной перевод по публичной ссылке, uuid-превью или slug (в т.ч. draft)."""
-    _require_sync_secret(x_sync_secret)
+async def _ref_from_request(request: Request, url: Optional[str]) -> str:
     ref = (url or "").strip()
     if not ref:
         try:
@@ -851,19 +784,44 @@ async def manual_sync_url(
             ref = str(payload.get("url") or payload.get("post_url") or "").strip()
     if not ref:
         raise HTTPException(status_code=400, detail="url required")
+    return ref
 
+
+def _sync_by_ref(ref: str, *, translate: bool) -> dict[str, Any]:
     try:
         post_id = _resolve_source_ref(ref)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    log.info("manual sync-url %s → %s", ref, post_id)
+    mode = "sync-url" if translate else "copy-url"
+    log.info("manual %s %s → %s", mode, ref, post_id)
     try:
-        result = sync_post(post_id, allow_draft=True)
+        result = sync_post(post_id, allow_draft=True, translate=translate)
     except Exception as exc:
-        log.exception("manual sync-url failed %s", post_id)
+        log.exception("manual %s failed %s", mode, post_id)
         raise HTTPException(status_code=502, detail=str(exc)[:400]) from exc
     return {"ok": True, "source_post_id": post_id, "ref": ref, **result}
+
+
+@app.post("/sync-url")
+async def manual_sync_url(
+    request: Request,
+    x_sync_secret: Optional[str] = Header(default=None),
+    url: Optional[str] = None,
+) -> dict[str, Any]:
+    """Ручной перевод по публичной ссылке, uuid-превью или slug (в т.ч. draft)."""
+    _require_sync_secret(x_sync_secret)
+    return _sync_by_ref(await _ref_from_request(request, url), translate=True)
+
+
+@app.post("/copy-url")
+async def manual_copy_url(
+    request: Request,
+    x_sync_secret: Optional[str] = Header(default=None),
+    url: Optional[str] = None,
+) -> dict[str, Any]:
+    """Копия RU→EN без перевода (watermark/cover scrub остаются)."""
+    _require_sync_secret(x_sync_secret)
+    return _sync_by_ref(await _ref_from_request(request, url), translate=False)
 
 
 @app.post("/reconcile")
@@ -908,7 +866,6 @@ if __name__ == "__main__":
     assert _clip("x" * 400, 146).endswith("…")
     assert "…" in _clip("alpha beta gamma delta", 12)
     assert len(_clip("a" * 500, _SEO_DESC_MAX)) <= _SEO_DESC_MAX
-    assert _rapidapi_configured() is bool(RAPIDAPI_KEY)
     assert _parse_post_ref("6afc09ad164e0e0001943911") == ("id", "6afc09ad164e0e0001943911")
     assert _parse_post_ref(
         "https://blog.themarfa.name/nakrutka-laikov-v-tvittere-na-zelenka-work/"
@@ -920,16 +877,19 @@ if __name__ == "__main__":
         "slug",
         "nakrutka-laikov-v-tvittere-na-zelenka-work",
     )
-    assert _parse_rapid_translation(
-        {"data": {"translations": {"translatedText": ["hi"]}}}, "fb"
-    ) == "hi"
-    assert _parse_rapid_translation(
-        {"data": {"translations": [{"translatedText": "hola"}]}}, "fb"
-    ) == "hola"
-    _deepl_quota_exhausted = False
-    assert _deepl_quota_blocked() is False
-    _mark_deepl_quota_exhausted()
-    assert _deepl_quota_blocked() is True
+    copied = _build_draft(
+        {
+            "title": "Заголовок",
+            "slug": "zagolovok",
+            "html": "<p>Текст</p>",
+            "custom_excerpt": "Кратко",
+        },
+        translate=False,
+    )
+    assert copied["title"] == "Заголовок"
+    assert copied["slug"] == "zagolovok"
+    assert copied["html"] == "<p>Текст</p>"
+    assert copied["custom_excerpt"] == "Кратко"
     since = datetime.fromisoformat(_reconcile_since().replace("Z", "+00:00"))
     assert timedelta(hours=23, minutes=59) < datetime.now(timezone.utc) - since < timedelta(hours=24, minutes=1)
     assert _parse_since("2025-06-01") == "2025-06-01T00:00:00.000Z"
