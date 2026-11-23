@@ -1,4 +1,4 @@
-name: Sync post by URL
+name: Sync post by URL (translate)
 
 on:
   workflow_dispatch:

@@ -80,7 +80,7 @@ curl -X POST "https://ВАШ-ХОСТ/sync-url" \
 
 Принимает публичный URL, превью `/p/{uuid}/`, slug или id. Ответ синхронный (дождаться перевода).
 
-**GitHub Actions** (`.github/workflows/sync-post.yml`): Actions → Sync post by URL → Run workflow → вставить ссылку. Secrets те же, что у reconcile: `RECONCILE_URL`, `WEBHOOK_SECRET`.
+**GitHub Actions** (`.github/workflows/sync-post.yml`): Actions → Sync post by URL (translate) → Run workflow → вставить ссылку. Secrets те же, что у reconcile: `RECONCILE_URL`, `WEBHOOK_SECRET`.
 
 ### Копия без перевода
 
