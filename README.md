@@ -78,7 +78,7 @@ curl -X POST "https://ВАШ-ХОСТ/sync-url" \
   -d '{"url":"https://blog.example/slug-posta/"}'
 ```
 
-Принимает публичный URL, превью `/p/{uuid}/`, slug или id. Ответ синхронный (дождаться перевода).
+Принимает публичный URL, ссылку Admin (`…/ghost/#/editor/post/{id}`), превью `/p/{uuid}/`, slug или id. Ответ синхронный (дождаться перевода).
 
 **GitHub Actions** (`.github/workflows/sync-post.yml`): Actions → Sync post by URL (translate) → Run workflow → вставить ссылку. Secrets те же, что у reconcile: `RECONCILE_URL`, `WEBHOOK_SECRET`.
 

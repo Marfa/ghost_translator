@@ -514,14 +514,27 @@ def _parse_post_ref(ref: str) -> tuple[str, str]:
         return "uuid", raw.lower()
 
     path = raw
-    if "://" in raw or raw.startswith("/"):
-        path = urlparse(raw).path or ""
+    if "://" in raw or raw.startswith("/") or "#/" in raw:
+        parsed = urlparse(raw)
+        # Ghost Admin editor: .../ghost/#/editor/post/{24-hex-id}
+        frag_parts = [p for p in (parsed.fragment or "").strip("/").split("/") if p]
+        if (
+            len(frag_parts) >= 3
+            and frag_parts[0].lower() == "editor"
+            and frag_parts[1].lower() in {"post", "page"}
+            and re.fullmatch(r"[0-9a-f]{24}", frag_parts[2], flags=re.IGNORECASE)
+        ):
+            return "id", frag_parts[2].lower()
+        path = parsed.path or ""
     parts = [p for p in path.strip("/").split("/") if p]
     if len(parts) >= 2 and parts[0].lower() == "p" and re.fullmatch(uuid_re, parts[1], flags=re.IGNORECASE):
         return "uuid", parts[1].lower()
+    # Admin shell path /ghost alone is not a slug
+    if parts == ["ghost"]:
+        raise ValueError(f"cannot parse post ref (need #/editor/post/{{id}}): {ref!r}")
     if parts:
         slug = unquote(parts[-1]).strip()
-        if slug:
+        if slug and slug.lower() != "ghost":
             return "slug", slug
     raise ValueError(f"cannot parse post ref: {ref!r}")
 
@@ -877,6 +890,14 @@ if __name__ == "__main__":
         "slug",
         "nakrutka-laikov-v-tvittere-na-zelenka-work",
     )
+    assert _parse_post_ref(
+        "https://test1574.ghost.io/ghost/#/editor/post/6b03fe4217e4610001440ddd"
+    ) == ("id", "6b03fe4217e4610001440ddd")
+    try:
+        _parse_post_ref("https://test1574.ghost.io/ghost/")
+        raise AssertionError("expected ValueError for bare /ghost/")
+    except ValueError:
+        pass
     copied = _build_draft(
         {
             "title": "Заголовок",
